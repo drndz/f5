@@ -35,6 +35,7 @@ build/
 f5-validation-results/
 config/f5-targets.csv
 config/.F5_MASTER_KEY
+config/.JDK
 
 ### VS Code ###
 .vscode/

@@ -4,8 +4,36 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT_DIR}/scripts/java-env.sh"
 
-TARGETS_FILE="${1:-${ROOT_DIR}/config/f5-targets.csv}"
-LOCAL_OUTPUT_DIR="${2:-${ROOT_DIR}/f5-validation-results}"
+TARGETS_FILE=""
+LOCAL_OUTPUT_DIR=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --yes|--approve-all)
+      export SSH_APPROVE_ALL_COMMANDS=true
+      shift
+      ;;
+    -h|--help)
+      echo "Usage: $0 [--yes|--approve-all] [targets.csv] [output-dir]" >&2
+      exit 0
+      ;;
+    *)
+      if [ -z "$TARGETS_FILE" ]; then
+        TARGETS_FILE="$1"
+      elif [ -z "$LOCAL_OUTPUT_DIR" ]; then
+        LOCAL_OUTPUT_DIR="$1"
+      else
+        echo "Unexpected argument: $1" >&2
+        echo "Usage: $0 [--yes|--approve-all] [targets.csv] [output-dir]" >&2
+        exit 2
+      fi
+      shift
+      ;;
+  esac
+done
+
+TARGETS_FILE="${TARGETS_FILE:-${ROOT_DIR}/config/f5-targets.csv}"
+LOCAL_OUTPUT_DIR="${LOCAL_OUTPUT_DIR:-${ROOT_DIR}/f5-validation-results}"
 
 load_f5_master_key "${ROOT_DIR}/config/.F5_MASTER_KEY"
 

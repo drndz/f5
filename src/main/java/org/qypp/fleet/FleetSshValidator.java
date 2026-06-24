@@ -62,9 +62,10 @@ public final class FleetSshValidator {
             checks.add(new F5Check("privileged_collection", "PASS", privilegedCollection
                     ? "Read-only diagnostics are using " + privilegeMode + " privileges."
                     : "No root or usable sudo privilege detected; using standard read-only diagnostics."));
-            String hostname = valueOr(target.name(), ssh.run("hostname 2>/dev/null || echo unknown"));
+            String hostname = valueOr(target.name(), ssh.run("uname -n 2>/dev/null || tmsh list sys global-settings hostname 2>/dev/null | awk '/hostname/ {print $2; exit}' || hostname 2>/dev/null || echo unknown"));
             String os = valueOr("unknown", ssh.run("if [ -f /etc/os-release ]; then . /etc/os-release && printf '%s' \"${PRETTY_NAME:-$NAME}\"; else uname -a; fi 2>/dev/null || uname -a 2>/dev/null || echo unknown"));
-            String f5Evidence = ssh.run("if command -v tmsh >/dev/null 2>&1; then echo tmsh-present; fi; cat /etc/issue /VERSION /etc/product /etc/os-release 2>/dev/null || true");
+            String f5Issue = ssh.run("cat /etc/issue 2>/dev/null || true");
+            String f5Evidence = f5Issue + "\n" + ssh.run("if command -v tmsh >/dev/null 2>&1; then echo tmsh-present; fi; cat /VERSION /etc/product /etc/os-release 2>/dev/null || true");
             boolean f5Detected = f5Detected(os + "\n" + f5Evidence);
             FleetTarget effectiveTarget = new FleetTarget(target.name(), target.host(), target.username(), target.encryptedPassword(), f5Detected ? "f5" : "vm");
             checks.add(new F5Check("target_detection", "PASS", f5Detected
@@ -145,9 +146,9 @@ public final class FleetSshValidator {
 
     private static boolean f5Detected(String evidence) {
         String normalized = evidence == null ? "" : evidence.toLowerCase();
-        return normalized.contains("tmsh-present")
-                || normalized.contains("big-ip")
+        return normalized.contains("big-ip")
                 || normalized.contains("bigip")
+                || normalized.contains("tmsh-present")
                 || normalized.contains("f5 networks")
                 || normalized.contains("f5os")
                 || normalized.contains("traffic management operating system");

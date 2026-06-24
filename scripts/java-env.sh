@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-DEFAULT_F5_VALIDATION_JDK_HOME='C:\Users\sergq\.jdks\ms-17.0.19'
-
 normalize_jdk_home() {
   local candidate="$1"
   if [ -z "$candidate" ]; then
@@ -40,18 +38,39 @@ normalize_jdk_home() {
   return 1
 }
 
+configured_jdk_home() {
+  local jdk_file="${ROOT_DIR:-$(pwd)}/config/.JDK"
+  if [ -n "${F5_VALIDATION_JDK_HOME:-}" ]; then
+    printf '%s\n' "$F5_VALIDATION_JDK_HOME"
+    return 0
+  fi
+  if [ -f "$jdk_file" ]; then
+    local configured
+    IFS= read -r configured < "$jdk_file" || true
+    configured="${configured%$'\r'}"
+    if [ -n "$configured" ]; then
+      printf '%s\n' "$configured"
+      return 0
+    fi
+  fi
+  if [ -n "${JAVA_HOME:-}" ]; then
+    printf '%s\n' "$JAVA_HOME"
+    return 0
+  fi
+  return 1
+}
+
 resolve_java_tools() {
-  local configured="${F5_VALIDATION_JDK_HOME:-${JAVA_HOME:-}}"
+  local configured=""
   local jdk_home=""
 
+  configured="$(configured_jdk_home || true)"
   if [ -n "$configured" ]; then
     jdk_home="$(normalize_jdk_home "$configured" || true)"
     if [ -z "$jdk_home" ]; then
       echo "Configured JDK path does not exist: $configured" >&2
       return 2
     fi
-  else
-    jdk_home="$(normalize_jdk_home "$DEFAULT_F5_VALIDATION_JDK_HOME" || true)"
   fi
 
   if [ -n "$jdk_home" ]; then
@@ -63,7 +82,7 @@ resolve_java_tools() {
   fi
 
   if [ -z "${JAVA_CMD:-}" ] || [ -z "${JAVAC_CMD:-}" ] || [ ! -x "$JAVA_CMD" ] || [ ! -x "$JAVAC_CMD" ]; then
-    echo "Could not find executable java/javac. Set F5_VALIDATION_JDK_HOME or JAVA_HOME." >&2
+    echo "Could not find executable java/javac. Set F5_VALIDATION_JDK_HOME, config/.JDK, JAVA_HOME, or PATH." >&2
     return 2
   fi
 
