@@ -1,0 +1,7 @@
+# name,mgmt_ip,username,encrypted_password,target_type
+# target_type can be auto, f5, or vm. Blank/old 4-column rows default to auto detection.
+# Generate encrypted_password with:
+#   printf 'use-a-long-random-master-key' > config/.F5_MASTER_KEY
+#   ./scripts/encrypt-password.sh
+f5-east,10.0.10.11,admin,v1:replace-with-encrypted-password,auto
+app-vm-01,10.0.20.21,azureuser,v1:replace-with-encrypted-password,vm
