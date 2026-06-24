@@ -18,15 +18,17 @@ final class SshCommandClient implements AutoCloseable {
     private final String host;
     private final String username;
     private final int commandTimeoutMillis;
+    private final boolean allowTmshFallback;
     private final BufferedReader confirmationReader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
     private final boolean approveAllCommands = Boolean.parseBoolean(System.getenv().getOrDefault("SSH_APPROVE_ALL_COMMANDS", "false"));
     private boolean preferTmshBash;
 
-    SshCommandClient(String host, String username, String password, int connectTimeoutMillis, int commandTimeoutMillis) {
+    SshCommandClient(String host, String username, String password, int connectTimeoutMillis, int commandTimeoutMillis, boolean allowTmshFallback) {
         try {
             JSch jsch = new JSch();
             this.host = host;
             this.username = username;
+            this.allowTmshFallback = allowTmshFallback;
             this.session = jsch.getSession(username, host, 22);
             this.session.setPassword(password);
             Properties config = new Properties();
@@ -55,15 +57,32 @@ final class SshCommandClient implements AutoCloseable {
         return runResult(command, input).exitStatus() == 0;
     }
 
+    boolean detectF5TmshShell() {
+        if (!allowTmshFallback) {
+            return false;
+        }
+        CommandResult viaTmsh = runResultDirect("run util bash -c " + tmshDoubleQuote("cat /etc/issue 2>/dev/null || true"), "");
+        if (looksLikeBigIp(viaTmsh.stdout())) {
+            preferTmshBash = true;
+            return true;
+        }
+        CommandResult viaSlashTmsh = runResultDirect("run /util bash -c " + tmshDoubleQuote("cat /etc/issue 2>/dev/null || true"), "");
+        if (looksLikeBigIp(viaSlashTmsh.stdout())) {
+            preferTmshBash = true;
+            return true;
+        }
+        return false;
+    }
+
     private CommandResult runResult(String command, String input) {
-        if (preferTmshBash && !isTmshBashCommand(command)) {
+        if (allowTmshFallback && preferTmshBash && !isTmshBashCommand(command)) {
             CommandResult preferred = runViaTmshBash(command, input);
             if (preferred.exitStatus() == 0 || !preferred.stdout().isBlank()) {
                 return preferred;
             }
         }
         CommandResult direct = runResultDirect(command, input);
-        if (shouldTryTmshBash(command, direct)) {
+        if (allowTmshFallback && shouldTryTmshBash(command, direct)) {
             CommandResult viaTmsh = runViaTmshBash(command, input);
             if (viaTmsh.exitStatus() == 0 || (!viaTmsh.stdout().isBlank() && direct.stdout().isBlank())) {
                 return viaTmsh;
@@ -189,6 +208,10 @@ final class SshCommandClient implements AutoCloseable {
                 || normalized.contains("use tmos shell utility")
                 || normalized.contains("system configuration")
                 || normalized.contains("tmsh");
+    }
+
+    private static boolean looksLikeBigIp(String output) {
+        return output != null && output.toLowerCase().contains("big-ip");
     }
 
     private static String shellQuote(String value) {
