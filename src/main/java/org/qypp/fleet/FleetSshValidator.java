@@ -55,6 +55,11 @@ public final class FleetSshValidator {
         int commandTimeout = intEnv("SSH_COMMAND_TIMEOUT_MILLIS", 10_000);
 
         boolean allowTmshFallback = shouldProbeTmsh(target);
+        if (allowTmshFallback) {
+            System.out.println("F5/tmsh probe is enabled for " + target.name() + " because target_type=" + target.targetType() + ".");
+        } else {
+            System.out.println("F5/tmsh probe is skipped for " + target.name() + " because target_type=vm.");
+        }
         try (SshCommandClient ssh = new SshCommandClient(target.host(), target.username(), password, connectTimeout, commandTimeout, allowTmshFallback)) {
             checks.add(new F5Check("ssh_connectivity", "PASS", "Java SSH commands executed successfully."));
             boolean tmshF5Detected = allowTmshFallback && ssh.detectF5TmshShell();
@@ -64,46 +69,51 @@ public final class FleetSshValidator {
             checks.add(new F5Check("privileged_collection", "PASS", privilegedCollection
                     ? "Read-only diagnostics are using " + privilegeMode + " privileges."
                     : "No root or usable sudo privilege detected; using standard read-only diagnostics."));
-            String hostname = valueOr(target.name(), ssh.run("uname -n 2>/dev/null || tmsh list sys global-settings hostname 2>/dev/null | awk '/hostname/ {print $2; exit}' || hostname 2>/dev/null || echo unknown"));
-            String os = valueOr("unknown", ssh.run("sed -n 's/^PRETTY_NAME=//p; s/^NAME=//p' /etc/os-release 2>/dev/null | head -n 1 | tr -d '\\042' || uname -a 2>/dev/null || echo unknown"));
+            String hostname = hostname(target, ssh);
+            String osRelease = ssh.run("cat /etc/os-release 2>/dev/null || true");
+            String os = valueOr("unknown", osName(osRelease, ssh.run("uname -a 2>/dev/null || true")));
             String f5Issue = ssh.run("cat /etc/issue 2>/dev/null || true");
-            String f5Evidence = f5Issue + "\n" + ssh.run("if command -v tmsh >/dev/null 2>&1; then echo tmsh-present; fi; cat /VERSION /etc/product /etc/os-release 2>/dev/null || true");
+            String f5Evidence = f5Issue + "\n" + ssh.run("command -v tmsh 2>/dev/null || true") + "\n" + ssh.run("cat /VERSION /etc/product 2>/dev/null || true") + "\n" + osRelease;
             boolean f5Detected = tmshF5Detected || f5Detected(os + "\n" + f5Evidence);
             FleetTarget effectiveTarget = new FleetTarget(target.name(), target.host(), target.username(), target.encryptedPassword(), f5Detected ? "f5" : "vm");
             checks.add(new F5Check("target_detection", "PASS", f5Detected
                     ? "F5/BIG-IP detected from remote OS evidence; F5-specific checks are enabled."
                     : "F5/BIG-IP was not detected; running standard VM checks only."));
             String uptime = valueOr("unknown", ssh.run("uptime -p 2>/dev/null || uptime 2>/dev/null || echo unknown"));
-            int processCount = intValue(ssh.run("ps -eo pid= 2>/dev/null | wc -l | tr -d ' '"));
-            long memoryTotal = longValue(ssh.run("awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0"));
-            long memoryAvailable = longValue(ssh.run("awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0"));
+            String meminfo = ssh.run("cat /proc/meminfo 2>/dev/null || true");
+            long memoryTotal = meminfoKb(meminfo, "MemTotal");
+            long memoryAvailable = meminfoKb(meminfo, "MemAvailable");
             long memoryUsed = Math.max(0, memoryTotal - memoryAvailable);
             long memoryPercent = percent(memoryUsed, memoryTotal);
             long cpuCoreCount = Math.max(1, longValue(ssh.run("getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1")));
-            String loadAverageOutput = ssh.run("awk '{print $1\" \"$2\" \"$3}' /proc/loadavg 2>/dev/null || echo '0 0 0'");
+            String loadAverageOutput = ssh.run("cat /proc/loadavg 2>/dev/null || echo '0 0 0'");
             double[] loadAverages = loadAverages(loadAverageOutput);
             long loadAverage1mPercent = Math.round(loadAverages[0] * 100.0 / cpuCoreCount);
             long loadAverage5mPercent = Math.round(loadAverages[1] * 100.0 / cpuCoreCount);
             long loadAverage15mPercent = Math.round(loadAverages[2] * 100.0 / cpuCoreCount);
             long cpuPercent = loadAverage1mPercent;
-            long diskPercent = longValue(ssh.run("df -P " + env("DISK_PATHS", "/") + " 2>/dev/null | awk 'NR>1 {gsub(/%/, \"\", $5); if ($5 > max) max=$5} END {print max+0}'"));
-            List<String> diskMounts = lines(ssh.run("df -Pk " + env("DISK_PATHS", "/") + " 2>/dev/null | awk 'NR>1 {gsub(/%/, \"\", $5); printf \"%s|%.2f|%.2f|%.2f|%.2f|%s%%\\n\", $6, $2/1048576, $3/1048576, $4/1048576, $4/1048576, $5}'"));
-            long ipConnectionCount = longValue(runReadOnly(ssh, privilege, "cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || ss -H -tun 2>/dev/null | wc -l | tr -d ' ' || echo 0"));
+            DiskUsage diskUsage = diskUsage(ssh.run("df -Pk " + env("DISK_PATHS", "/") + " 2>/dev/null || true"));
+            long diskPercent = diskUsage.maxPercent();
+            List<String> diskMounts = diskUsage.mounts();
+            String activeConnectionRaw = runReadOnly(ssh, privilege, "ss -H -tun 2>/dev/null || true");
+            long ipConnectionCount = conntrackCount(runReadOnly(ssh, privilege, "cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || true"), activeConnectionRaw);
             long ipConnectionMax = longValue(runReadOnly(ssh, privilege, "cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 0"));
-            List<String> activeConnections = lines(runReadOnly(ssh, privilege, activeConnectionsCommand()));
+            List<String> activeConnections = activeConnectionGroups(activeConnectionRaw);
             String serviceOutput = serviceOutput(effectiveTarget, ssh, privilege);
             int serviceCount = nonBlankLines(serviceOutput);
             List<String> runningServices = lines(serviceOutput);
-            List<String> processesByCpu = lines(runReadOnly(ssh, privilege, "ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pcpu 2>/dev/null | awk '{printf \"%s|%s|%s|%.2f|%s\\n\", $1, $2, $3, $4/1024, $5}'"));
-            List<String> processesByMemory = lines(runReadOnly(ssh, privilege, "ps -eo pid=,pcpu=,pmem=,rss=,comm= --sort=-pmem 2>/dev/null | awk '{printf \"%s|%s|%s|%.2f|%s\\n\", $1, $2, $3, $4/1024, $5}'"));
-            List<String> networkInterfaces = lines(ssh.run("for iface in /sys/class/net/*; do name=${iface##*/}; rx=$(cat \"$iface/statistics/rx_bytes\" 2>/dev/null || echo 0); tx=$(cat \"$iface/statistics/tx_bytes\" 2>/dev/null || echo 0); ips=$(ip -o addr show dev \"$name\" 2>/dev/null | awk '{print $4}' | paste -sd ',' -); awk -v n=\"$name\" -v ips=\"$ips\" -v rx=\"$rx\" -v tx=\"$tx\" 'BEGIN {printf \"%s|%s|%.3f|%.3f\\n\", n, ips, rx/1073741824, tx/1073741824}'; done"));
+            String rawProcesses = runReadOnly(ssh, privilege, "ps -eo pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null || true");
+            int processCount = processRows(rawProcesses).size();
+            List<String> processesByCpu = processesByCpu(rawProcesses);
+            List<String> processesByMemory = processesByMemory(rawProcesses);
+            List<String> networkInterfaces = networkInterfaces(ssh.run("cat /proc/net/dev 2>/dev/null || true"), ssh.run("ip -o -4 addr show 2>/dev/null || true"));
             String listenerOutput = listenerOutput(ssh, privilege);
-            Map<String, String> serviceNames = serviceNames(ssh.run("awk '!/^#/ && $2 ~ /^[0-9]+\\/(tcp|udp)$/ {split($2,a,\"/\"); print a[2]\"|\"a[1]\"|\"$1}' /etc/services 2>/dev/null || true"));
+            Map<String, String> serviceNames = serviceNamesFromEtcServices(ssh.run("cat /etc/services 2>/dev/null || true"));
             int listenerCount = nonBlankLines(listenerOutput);
             List<Integer> ports = ports(listenerOutput);
             List<String> listeningEndpoints = listeningEndpoints(listenerOutput, serviceNames);
             List<String> criticalDown = criticalDown(effectiveTarget, serviceOutput);
-            List<String> logErrors = lines(runReadOnly(ssh, privilege, "find /var/log -maxdepth 1 -type f 2>/dev/null | while IFS= read -r file; do tail -n " + logLookback(effectiveTarget) + " \"$file\" 2>/dev/null; done | grep -Ei 'error|fail|fatal|crit|panic|segfault|denied' | tail -n 100 || true"));
+            List<String> logErrors = logErrors(runReadOnly(ssh, privilege, "tail -n " + logLookback(effectiveTarget) + " /var/log/ltm /var/log/audit /var/log/kern.log /var/log/messages /var/log/syslog 2>/dev/null || true"));
 
             addCriticalCheck(checks, criticalDown, effectiveTarget);
             addPortCheck(checks, ports, effectiveTarget);
@@ -163,52 +173,24 @@ public final class FleetSshValidator {
 
     private static String serviceOutput(FleetTarget target, SshCommandClient ssh, PrivilegeAccess privilege) {
         if ("f5".equalsIgnoreCase(target.targetType())) {
-            return ssh.run("if command -v tmsh >/dev/null 2>&1; then tmsh show sys service 2>/dev/null; elif command -v systemctl >/dev/null 2>&1; then echo systemctl; else echo ps; fi").equals("systemctl")
-                    ? runReadOnly(ssh, privilege, loadedActiveServicesCommand())
-                    : ssh.run("if command -v tmsh >/dev/null 2>&1; then tmsh show sys service 2>/dev/null; else ps -eo comm= 2>/dev/null; fi");
+            String tmshServices = ssh.run("tmsh show sys service 2>/dev/null || true");
+            if (!tmshServices.isBlank()) {
+                return tmshServices;
+            }
         }
-        return ssh.run("if command -v systemctl >/dev/null 2>&1; then echo systemctl; else echo ps; fi").equals("systemctl")
-                ? runReadOnly(ssh, privilege, loadedActiveServicesCommand())
-                : ssh.run("ps -eo comm= 2>/dev/null");
-    }
-
-    private static String loadedActiveServicesCommand() {
-        return "systemctl --type=service --state=active --no-pager --no-legend 2>/dev/null | " +
-                "while read -r unit load active sub rest; do " +
-                "[ \"$load\" = loaded ] && [ \"$active\" = active ] && [ \"$sub\" != exited ] && printf \"%s loaded active %s\\n\" \"$unit\" \"$sub\"; " +
-                "done";
-    }
-
-    private static String activeConnectionsCommand() {
-        return "if command -v ss >/dev/null 2>&1; then " +
-                "ss -H -tun 2>/dev/null | awk '" +
-                "function clean(endpoint) {gsub(/\\[/, \"\", endpoint); gsub(/\\]/, \"\", endpoint); return endpoint} " +
-                "function endpoint_port(endpoint, value) {value=endpoint; sub(/^.*:/, \"\", value); return value} " +
-                "function endpoint_ip(endpoint, value) {value=endpoint; sub(/:[^:]*$/, \"\", value); return value} " +
-                "function numeric(value) {return value ~ /^[0-9]+$/} " +
-                "function connection_direction(localPort, peerPort) {" +
-                "if (numeric(localPort) && numeric(peerPort) && localPort < 32768 && peerPort >= 32768) return \"in\"; " +
-                "if (numeric(localPort) && numeric(peerPort) && peerPort < 32768 && localPort >= 32768) return \"out\"; " +
-                "if (numeric(localPort) && numeric(peerPort) && peerPort < localPort) return \"out\"; " +
-                "return \"peer\"} " +
-                "{proto=$1; local=clean($(NF-1)); peer=clean($NF); if (peer == \"\" || peer == \"*:*\") next; " +
-                "localPort=endpoint_port(local); peerPort=endpoint_port(peer); ip=endpoint_ip(peer); " +
-                "if (ip == \"\" || peerPort == \"*\" || ip ~ /^127\\./ || ip == \"::1\" || ip == \"0.0.0.0\" || ip == \"*\") next; " +
-                "direction=connection_direction(localPort, peerPort); displayPort=(direction == \"in\" ? localPort : peerPort); " +
-                "counts[direction \"|\" proto \"|\" ip \"|\" displayPort]++} " +
-                "END {for (key in counts) print key \"|\" counts[key]}' | sort -t'|' -k4,4nr -k2,2 -k3,3; " +
-                "fi";
+        String systemctlOutput = runReadOnly(ssh, privilege, "systemctl --type=service --state=active --no-pager --no-legend 2>/dev/null || true");
+        if (!systemctlOutput.isBlank()) {
+            return String.join("\n", loadedActiveServiceLines(systemctlOutput));
+        }
+        return ssh.run("ps -eo comm= 2>/dev/null || true");
     }
 
     private static String listenerOutput(SshCommandClient ssh, PrivilegeAccess privilege) {
-        String listenerTool = ssh.run("if command -v ss >/dev/null 2>&1; then echo ss; elif command -v netstat >/dev/null 2>&1; then echo netstat; fi");
-        if ("ss".equals(listenerTool)) {
-            return runReadOnly(ssh, privilege, "ss -H -tulpen 2>/dev/null || ss -H -tulnp 2>/dev/null || ss -H -tuln 2>/dev/null");
+        String ssOutput = runReadOnly(ssh, privilege, "ss -H -tulpen 2>/dev/null || true");
+        if (!ssOutput.isBlank()) {
+            return ssOutput;
         }
-        if ("netstat".equals(listenerTool)) {
-            return runReadOnly(ssh, privilege, "netstat -tulpen 2>/dev/null || netstat -tuln 2>/dev/null");
-        }
-        return "";
+        return runReadOnly(ssh, privilege, "netstat -tulpen 2>/dev/null || true");
     }
 
     private static String shellQuote(String value) {
@@ -219,6 +201,15 @@ public final class FleetSshValidator {
         boolean privileged() {
             return "root".equals(mode) || "sudo".equals(mode) || "sudo-password".equals(mode);
         }
+    }
+
+    private record DiskUsage(long maxPercent, List<String> mounts) {
+    }
+
+    private record Endpoint(String ip, String port) {
+    }
+
+    private record ProcessRow(String pid, double cpuPercent, double memoryPercent, long rssKb, String command) {
     }
 
     private static List<String> criticalDown(FleetTarget target, String serviceOutput) {
@@ -300,12 +291,20 @@ public final class FleetSshValidator {
         return endpoints;
     }
 
-    private static Map<String, String> serviceNames(String output) {
+    private static Map<String, String> serviceNamesFromEtcServices(String output) {
         Map<String, String> serviceNames = new HashMap<>();
         for (String line : lines(output)) {
-            String[] parts = line.split("\\|", -1);
-            if (parts.length >= 3) {
-                serviceNames.putIfAbsent(serviceKey(parts[0], parts[1]), parts[2]);
+            String trimmed = line.strip();
+            if (trimmed.isBlank() || trimmed.startsWith("#")) {
+                continue;
+            }
+            String[] parts = trimmed.split("\\s+");
+            if (parts.length < 2 || !parts[1].contains("/")) {
+                continue;
+            }
+            String[] portProtocol = parts[1].split("/", 2);
+            if (portProtocol.length == 2 && portProtocol[0].matches("\\d+")) {
+                serviceNames.putIfAbsent(serviceKey(portProtocol[1], portProtocol[0]), parts[0]);
             }
         }
         return serviceNames;
@@ -518,6 +517,240 @@ public final class FleetSshValidator {
             }
         }
         return result;
+    }
+
+    private static String hostname(FleetTarget target, SshCommandClient ssh) {
+        String uname = ssh.run("uname -n 2>/dev/null || true");
+        if (!uname.isBlank()) {
+            return uname.strip();
+        }
+        String tmshHostname = ssh.run("tmsh list sys global-settings hostname 2>/dev/null || true");
+        for (String line : lines(tmshHostname)) {
+            String[] parts = line.strip().split("\\s+");
+            if (parts.length >= 2 && "hostname".equals(parts[0])) {
+                return parts[1];
+            }
+        }
+        return target.name();
+    }
+
+    private static String osName(String osRelease, String uname) {
+        String name = "";
+        for (String line : lines(osRelease)) {
+            if (line.startsWith("PRETTY_NAME=")) {
+                return unquote(line.substring("PRETTY_NAME=".length()));
+            }
+            if (line.startsWith("NAME=")) {
+                name = unquote(line.substring("NAME=".length()));
+            }
+        }
+        return name.isBlank() ? valueOr("unknown", uname) : name;
+    }
+
+    private static String unquote(String value) {
+        String stripped = value == null ? "" : value.strip();
+        if (stripped.length() >= 2 && stripped.startsWith("\"") && stripped.endsWith("\"")) {
+            return stripped.substring(1, stripped.length() - 1);
+        }
+        return stripped;
+    }
+
+    private static long meminfoKb(String meminfo, String key) {
+        String prefix = key + ":";
+        for (String line : lines(meminfo)) {
+            if (line.startsWith(prefix)) {
+                return longValue(line.substring(prefix.length()).strip());
+            }
+        }
+        return 0;
+    }
+
+    private static DiskUsage diskUsage(String dfOutput) {
+        long maxPercent = 0;
+        List<String> mounts = new ArrayList<>();
+        for (String line : lines(dfOutput)) {
+            if (line.startsWith("Filesystem") || line.isBlank()) {
+                continue;
+            }
+            String[] parts = line.trim().split("\\s+");
+            if (parts.length < 6) {
+                continue;
+            }
+            long totalKb = longValue(parts[1]);
+            long usedKb = longValue(parts[2]);
+            long availableKb = longValue(parts[3]);
+            long percent = longValue(parts[4]);
+            maxPercent = Math.max(maxPercent, percent);
+            mounts.add(parts[5] + "|" + gb(totalKb) + "|" + gb(usedKb) + "|" + gb(availableKb) + "|" + gb(availableKb) + "|" + percent + "%");
+        }
+        return new DiskUsage(maxPercent, mounts);
+    }
+
+    private static List<ProcessRow> processRows(String psOutput) {
+        List<ProcessRow> rows = new ArrayList<>();
+        for (String line : lines(psOutput)) {
+            String[] parts = line.strip().split("\\s+", 5);
+            if (parts.length < 5) {
+                continue;
+            }
+            rows.add(new ProcessRow(parts[0], doubleValue(parts[1]), doubleValue(parts[2]), longValue(parts[3]), parts[4]));
+        }
+        return rows;
+    }
+
+    private static List<String> processesByCpu(String psOutput) {
+        return processRows(psOutput).stream()
+                .sorted(Comparator.comparingDouble(ProcessRow::cpuPercent).reversed())
+                .map(FleetSshValidator::processReportLine)
+                .toList();
+    }
+
+    private static List<String> processesByMemory(String psOutput) {
+        return processRows(psOutput).stream()
+                .sorted(Comparator.comparingDouble(ProcessRow::memoryPercent).reversed())
+                .map(FleetSshValidator::processReportLine)
+                .toList();
+    }
+
+    private static String processReportLine(ProcessRow row) {
+        return row.pid() + "|" + formatDouble(row.cpuPercent()) + "|" + formatDouble(row.memoryPercent()) + "|" + gb(row.rssKb()) + "|" + row.command();
+    }
+
+    private static List<String> networkInterfaces(String procNetDev, String ipAddrOutput) {
+        Map<String, List<String>> ipsByInterface = new HashMap<>();
+        for (String line : lines(ipAddrOutput)) {
+            String[] parts = line.strip().split("\\s+");
+            if (parts.length >= 4 && "inet".equals(parts[2])) {
+                ipsByInterface.computeIfAbsent(parts[1], ignored -> new ArrayList<>()).add(parts[3]);
+            }
+        }
+        List<String> interfaces = new ArrayList<>();
+        for (String line : lines(procNetDev)) {
+            int separator = line.indexOf(':');
+            if (separator < 0) {
+                continue;
+            }
+            String name = line.substring(0, separator).strip();
+            String[] counters = line.substring(separator + 1).strip().split("\\s+");
+            if (counters.length < 16) {
+                continue;
+            }
+            double rxGb = longValue(counters[0]) / 1073741824.0;
+            double txGb = longValue(counters[8]) / 1073741824.0;
+            String ips = String.join(",", ipsByInterface.getOrDefault(name, List.of()));
+            interfaces.add(name + "|" + ips + "|" + formatDouble(rxGb, 3) + "|" + formatDouble(txGb, 3));
+        }
+        interfaces.sort(String::compareTo);
+        return interfaces;
+    }
+
+    private static List<String> loadedActiveServiceLines(String systemctlOutput) {
+        List<String> services = new ArrayList<>();
+        for (String line : lines(systemctlOutput)) {
+            String[] parts = line.strip().split("\\s+", 5);
+            if (parts.length >= 4 && "loaded".equals(parts[1]) && "active".equals(parts[2]) && !"exited".equals(parts[3])) {
+                services.add(parts[0] + " loaded active " + parts[3]);
+            }
+        }
+        services.sort(String::compareTo);
+        return services;
+    }
+
+    private static List<String> logErrors(String rawLogs) {
+        List<String> matches = new ArrayList<>();
+        for (String line : lines(rawLogs)) {
+            String lower = line.toLowerCase();
+            if (lower.contains("error") || lower.contains("fail") || lower.contains("fatal")
+                    || lower.contains("crit") || lower.contains("panic") || lower.contains("segfault")
+                    || lower.contains("denied")) {
+                matches.add(line);
+            }
+        }
+        int from = Math.max(0, matches.size() - 100);
+        return new ArrayList<>(matches.subList(from, matches.size()));
+    }
+
+    private static long conntrackCount(String nfConntrackCount, String ssOutput) {
+        long conntrack = longValue(nfConntrackCount);
+        return conntrack > 0 ? conntrack : lines(ssOutput).stream().filter(line -> !line.isBlank()).count();
+    }
+
+    private static List<String> activeConnectionGroups(String ssOutput) {
+        Map<String, Integer> counts = new HashMap<>();
+        for (String line : lines(ssOutput)) {
+            String[] parts = line.trim().split("\\s+");
+            if (parts.length < 5) {
+                continue;
+            }
+            String proto = parts[0];
+            Endpoint local = endpoint(cleanEndpoint(parts[parts.length - 2]));
+            Endpoint peer = endpoint(cleanEndpoint(parts[parts.length - 1]));
+            if (peer.ip().isBlank() || peer.port().isBlank() || "*".equals(peer.port())
+                    || peer.ip().startsWith("127.") || "::1".equals(peer.ip())
+                    || "0.0.0.0".equals(peer.ip()) || "*".equals(peer.ip())) {
+                continue;
+            }
+            String direction = connectionDirection(local.port(), peer.port());
+            String displayPort = "in".equals(direction) ? local.port() : peer.port();
+            String key = direction + "|" + proto + "|" + peer.ip() + "|" + displayPort;
+            counts.merge(key, 1, Integer::sum);
+        }
+        return counts.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()))
+                .map(entry -> entry.getKey() + "|" + entry.getValue())
+                .toList();
+    }
+
+    private static String cleanEndpoint(String endpoint) {
+        return endpoint == null ? "" : endpoint.replace("[", "").replace("]", "");
+    }
+
+    private static Endpoint endpoint(String endpoint) {
+        int portSeparator = endpoint.lastIndexOf(':');
+        if (portSeparator < 0) {
+            return new Endpoint(endpoint, "");
+        }
+        String ip = endpoint.substring(0, portSeparator);
+        int scopeSeparator = ip.indexOf('%');
+        if (scopeSeparator >= 0) {
+            ip = ip.substring(0, scopeSeparator);
+        }
+        return new Endpoint(ip, endpoint.substring(portSeparator + 1));
+    }
+
+    private static String connectionDirection(String localPort, String peerPort) {
+        long local = longValue(localPort);
+        long peer = longValue(peerPort);
+        if (local > 0 && peer > 0 && local < 32768 && peer >= 32768) {
+            return "in";
+        }
+        if (local > 0 && peer > 0 && peer < 32768 && local >= 32768) {
+            return "out";
+        }
+        if (local > 0 && peer > 0 && peer < local) {
+            return "out";
+        }
+        return "peer";
+    }
+
+    private static String gb(long kb) {
+        return String.format(java.util.Locale.ROOT, "%.2f", kb / 1048576.0);
+    }
+
+    private static double doubleValue(String value) {
+        try {
+            return Double.parseDouble(value.strip());
+        } catch (RuntimeException exception) {
+            return 0;
+        }
+    }
+
+    private static String formatDouble(double value) {
+        return formatDouble(value, 2);
+    }
+
+    private static String formatDouble(double value, int decimals) {
+        return String.format(java.util.Locale.ROOT, "%." + decimals + "f", value);
     }
 
     private static int intValue(String value) {

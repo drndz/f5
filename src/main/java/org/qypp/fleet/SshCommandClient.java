@@ -97,15 +97,20 @@ final class SshCommandClient implements AutoCloseable {
     }
 
     private CommandResult runViaTmshBash(String command, String input) {
-        CommandResult viaTmsh = runResultDirect("run util bash -c " + tmshDoubleQuote(command), input);
+        CommandResult viaTmsh = runResultDirect("run util bash -c " + shellQuote(command), input);
         if (viaTmsh.exitStatus() == 0 || !viaTmsh.stdout().isBlank()) {
             preferTmshBash = true;
             return viaTmsh;
         }
-        CommandResult viaSlashTmsh = runResultDirect("run /util bash -c " + tmshDoubleQuote(command), input);
+        CommandResult viaSlashTmsh = runResultDirect("run /util bash -c " + shellQuote(command), input);
         if (viaSlashTmsh.exitStatus() == 0 || !viaSlashTmsh.stdout().isBlank()) {
             preferTmshBash = true;
             return viaSlashTmsh;
+        }
+        CommandResult viaDoubleQuotedTmsh = runResultDirect("run util bash -c " + tmshDoubleQuote(command), input);
+        if (viaDoubleQuotedTmsh.exitStatus() == 0 || !viaDoubleQuotedTmsh.stdout().isBlank()) {
+            preferTmshBash = true;
+            return viaDoubleQuotedTmsh;
         }
         return viaTmsh;
     }
