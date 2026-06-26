@@ -39,7 +39,8 @@ normalize_jdk_home() {
 }
 
 configured_jdk_home() {
-  local jdk_file="${ROOT_DIR:-$(pwd)}/config/.JDK"
+  local jdk_file
+  jdk_file="$(effective_config_dir)/.JDK"
   if [ -n "${F5_VALIDATION_JDK_HOME:-}" ]; then
     printf '%s\n' "$F5_VALIDATION_JDK_HOME"
     return 0
@@ -58,6 +59,24 @@ configured_jdk_home() {
     return 0
   fi
   return 1
+}
+
+effective_config_dir() {
+  local root="${ROOT_DIR:-$(pwd)}"
+  local selector_file="${root}/config/.conf_effective"
+  local selected="real"
+  if [ -f "$selector_file" ]; then
+    selected="$(sed -e 's/\r$//' "$selector_file" | awk 'NF && $1 !~ /^#/ { print; exit }')"
+    selected="${selected:-real}"
+  fi
+  case "$selected" in
+    /*|[A-Za-z]:\\*)
+      printf '%s\n' "$selected"
+      ;;
+    *)
+      printf '%s\n' "${root}/config/${selected}"
+      ;;
+  esac
 }
 
 resolve_java_tools() {
@@ -82,7 +101,7 @@ resolve_java_tools() {
   fi
 
   if [ -z "${JAVA_CMD:-}" ] || [ -z "${JAVAC_CMD:-}" ] || [ ! -x "$JAVA_CMD" ] || [ ! -x "$JAVAC_CMD" ]; then
-    echo "Could not find executable java/javac. Set F5_VALIDATION_JDK_HOME, config/.JDK, JAVA_HOME, or PATH." >&2
+    echo "Could not find executable java/javac. Set F5_VALIDATION_JDK_HOME, <effective-config>/.JDK, JAVA_HOME, or PATH." >&2
     return 2
   fi
 
@@ -107,22 +126,22 @@ java_classpath() {
 }
 
 load_f5_master_key() {
-  local key_file="${1:-${ROOT_DIR:-$(pwd)}/config/.F5_MASTER_KEY}"
-  if [ -n "${F5_MASTER_KEY:-}" ]; then
-    export F5_MASTER_KEY
+  local key_file="${1:-$(effective_config_dir)/.MASTER_KEY}"
+  if [ -n "${MASTER_KEY:-}" ]; then
+    export MASTER_KEY
     return 0
   fi
   if [ ! -f "$key_file" ]; then
     echo "Master key file not found: $key_file" >&2
-    echo "Create it locally as config/.F5_MASTER_KEY. This file is ignored by git and must not be committed." >&2
+    echo "Create it locally as $(effective_config_dir)/.MASTER_KEY. This file is ignored by git and must not be committed." >&2
     return 1
   fi
-  F5_MASTER_KEY="$(tr -d '\r\n' < "$key_file")"
-  if [ -z "$F5_MASTER_KEY" ]; then
+  MASTER_KEY="$(tr -d '\r\n' < "$key_file")"
+  if [ -z "$MASTER_KEY" ]; then
     echo "Master key file is empty: $key_file" >&2
     return 1
   fi
-  export F5_MASTER_KEY
+  export MASTER_KEY
 }
 
 resolve_java_tools

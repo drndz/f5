@@ -68,6 +68,16 @@ public final class PasswordCrypto {
         }
     }
 
+    public static String decryptOrPlain(String value, String masterKey) {
+        if (value == null || !value.startsWith(PREFIX)) {
+            return value == null ? "" : value;
+        }
+        if (masterKey == null || masterKey.isBlank()) {
+            throw new IllegalArgumentException("Master key is required only for encrypted password values with the v1: prefix.");
+        }
+        return decrypt(value, masterKey);
+    }
+
     private static SecretKeySpec key(String masterKey, byte[] salt) throws GeneralSecurityException {
         PBEKeySpec spec = new PBEKeySpec(masterKey.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_BITS);
         byte[] encoded = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();

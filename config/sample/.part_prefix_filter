@@ -1,0 +1,4 @@
+# Optional F5 partition prefix filter.
+# Copy this file to config/real/.part_prefix_filter and put one prefix on the first non-comment line.
+# When present, only partitions whose names start with this value are shown in the F5 partition/pool report.
+MyTenant

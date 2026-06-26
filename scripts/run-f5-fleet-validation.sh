@@ -6,6 +6,7 @@ source "${ROOT_DIR}/scripts/java-env.sh"
 
 TARGETS_FILE=""
 LOCAL_OUTPUT_DIR=""
+DETAILS_SSH=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -13,8 +14,16 @@ while [ "$#" -gt 0 ]; do
       export SSH_APPROVE_ALL_COMMANDS=true
       shift
       ;;
+    --log)
+      export SSH_LOG_COMMAND_OUTPUT=true
+      shift
+      ;;
+    --details-ssh)
+      DETAILS_SSH=true
+      shift
+      ;;
     -h|--help)
-      echo "Usage: $0 [--yes|--approve-all] [targets.csv] [output-dir]" >&2
+      echo "Usage: $0 [--yes|--approve-all] [--log] [--details-ssh] [targets.csv] [output-dir]" >&2
       exit 0
       ;;
     *)
@@ -24,7 +33,7 @@ while [ "$#" -gt 0 ]; do
         LOCAL_OUTPUT_DIR="$1"
       else
         echo "Unexpected argument: $1" >&2
-        echo "Usage: $0 [--yes|--approve-all] [targets.csv] [output-dir]" >&2
+        echo "Usage: $0 [--yes|--approve-all] [--log] [--details-ssh] [targets.csv] [output-dir]" >&2
         exit 2
       fi
       shift
@@ -32,18 +41,26 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-TARGETS_FILE="${TARGETS_FILE:-${ROOT_DIR}/config/f5-targets.csv}"
+CONFIG_DIR="$(effective_config_dir)"
+TARGETS_FILE="${TARGETS_FILE:-${CONFIG_DIR}/f5-targets.csv}"
 LOCAL_OUTPUT_DIR="${LOCAL_OUTPUT_DIR:-${ROOT_DIR}/f5-validation-results}"
-
-load_f5_master_key "${ROOT_DIR}/config/.F5_MASTER_KEY"
 
 if [ ! -f "$TARGETS_FILE" ]; then
   echo "Targets file not found: $TARGETS_FILE" >&2
   exit 2
 fi
 
+if awk -F, '/^[[:space:]]*($|#)/ { next } $1 == "name" { next } { password=$4; sub(/^[[:space:]]+/, "", password); sub(/[[:space:]]+$/, "", password); if (password ~ /^v1:/) { encrypted=1 } } END { exit encrypted ? 0 : 1 }' "$TARGETS_FILE"; then
+  load_f5_master_key "${CONFIG_DIR}/.MASTER_KEY"
+fi
+
 mkdir -p "$LOCAL_OUTPUT_DIR"
 MAIN_CLASSES="$("${ROOT_DIR}/scripts/compile-java.sh")"
 LIB_CP="${ROOT_DIR}/lib/*"
 
-"$JAVA_CMD" -cp "$(java_classpath "$MAIN_CLASSES:$LIB_CP")" org.qypp.Main fleet "$TARGETS_FILE" "$LOCAL_OUTPUT_DIR"
+JAVA_ARGS=(fleet "$TARGETS_FILE" "$LOCAL_OUTPUT_DIR")
+if [ "$DETAILS_SSH" = true ]; then
+  JAVA_ARGS+=(--details-ssh)
+fi
+
+"$JAVA_CMD" -cp "$(java_classpath "$MAIN_CLASSES:$LIB_CP")" org.qypp.Main "${JAVA_ARGS[@]}"

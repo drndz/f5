@@ -9,8 +9,8 @@ class F5ReportParserTest {
                   "target_type": "f5",
                   "collected_at": "2026-06-24T09:00:00Z",
                   "status": "FAIL",
-                  "privilege_mode": "sudo",
-                  "privileged_collection": true,
+                  "privilege_mode": "login-user",
+                  "privileged_collection": false,
                   "os": "BIG-IP",
                   "uptime": "1 day",
                   "process_count": 123,
@@ -34,10 +34,15 @@ class F5ReportParserTest {
                   "critical_services_down": ["mcpd"],
                   "external_listening_ports": [22,443],
                   "listening_endpoints": ["tcp|0.0.0.0|443|nginx"],
-                  "processes_by_cpu": ["10|7.5|1.0|20.00|nginx"],
-                  "processes_by_memory": ["20|1.0|8.0|120.00|java"],
+                  "processes_by_cpu": ["10|7.5|1.0|20.00|5.00|nginx"],
+                  "processes_by_memory": ["20|1.0|8.0|120.00|10.00|java"],
                   "running_services": ["nginx.service loaded active running nginx"],
                   "network_interfaces": ["eth0|10.0.0.4/24|1.250|0.750"],
+                  "system_users": ["root|0|/bin/bash|pts/0 10.0.0.1 Thu Jun 25 10:00:00 +0000 2026"],
+                  "logged_users": ["root|10.0.0.1|Jun 25 10:00:00|accepted"],
+                  "f5_load_history": ["/var/rrd/cpu.rrd|1782410400|1.500000"],
+                  "f5_partitions_pools": ["Common|web_pool|ltm pool /Common/web_pool { members none }"],
+                  "outbound_checks": ["dns|dns.example.com|10.0.0.53|53|UDP|PASS|OUTBOUND_CHECK_PASS"],
                   "recent_log_errors": ["Jun 24 error example"],
                   "checks": [
                     {"name":"critical_services","status":"FAIL","detail":"mcpd down"},
@@ -52,8 +57,8 @@ class F5ReportParserTest {
         TestSupport.assertEquals("edge-a", report.label());
         TestSupport.assertEquals("f5", report.targetType());
         TestSupport.assertEquals("FAIL", report.status());
-        TestSupport.assertEquals("sudo", report.privilegeMode());
-        TestSupport.assertTrue(report.privilegedCollection(), "Report should parse privileged collection.");
+        TestSupport.assertEquals("login-user", report.privilegeMode());
+        TestSupport.assertTrue(!report.privilegedCollection(), "Report should parse login-user collection mode.");
         TestSupport.assertEquals(25L, report.cpuLoadPercent());
         TestSupport.assertEquals(4L, report.cpuCoreCount());
         TestSupport.assertEquals(40L, report.diskUsedPercent());
@@ -65,10 +70,15 @@ class F5ReportParserTest {
         TestSupport.assertEquals("tcp|10.0.0.10|443|3", report.activeConnections().get(0));
         TestSupport.assertEquals(2, report.externalListeningPorts().size());
         TestSupport.assertEquals("tcp|0.0.0.0|443|nginx", report.listeningEndpoints().get(0));
-        TestSupport.assertEquals("10|7.5|1.0|20.00|nginx", report.processesByCpu().get(0));
-        TestSupport.assertEquals("20|1.0|8.0|120.00|java", report.processesByMemory().get(0));
+        TestSupport.assertEquals("10|7.5|1.0|20.00|5.00|nginx", report.processesByCpu().get(0));
+        TestSupport.assertEquals("20|1.0|8.0|120.00|10.00|java", report.processesByMemory().get(0));
         TestSupport.assertEquals("nginx.service loaded active running nginx", report.runningServices().get(0));
         TestSupport.assertEquals("eth0|10.0.0.4/24|1.250|0.750", report.networkInterfaces().get(0));
+        TestSupport.assertEquals("root|0|/bin/bash|pts/0 10.0.0.1 Thu Jun 25 10:00:00 +0000 2026", report.systemUsers().get(0));
+        TestSupport.assertEquals("root|10.0.0.1|Jun 25 10:00:00|accepted", report.loggedUsers().get(0));
+        TestSupport.assertEquals("/var/rrd/cpu.rrd|1782410400|1.500000", report.f5LoadHistory().get(0));
+        TestSupport.assertEquals("Common|web_pool|ltm pool /Common/web_pool { members none }", report.f5PartitionsPools().get(0));
+        TestSupport.assertEquals("dns|dns.example.com|10.0.0.53|53|UDP|PASS|OUTBOUND_CHECK_PASS", report.outboundChecks().get(0));
         TestSupport.assertEquals("mcpd", report.criticalServices().get(0));
         TestSupport.assertTrue(report.checks().get(0).failed(), "First check should be failed.");
     }

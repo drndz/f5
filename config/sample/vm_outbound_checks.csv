@@ -1,0 +1,6 @@
+# name,host,port,protocol
+# These checks run from every configured VM/F5 target.
+# protocol is TCP or UDP.
+external-https,203.0.113.10,443,TCP
+external-dns,203.0.113.53,53,UDP
+external-radius-sim,203.0.113.181,1812,UDP

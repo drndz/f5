@@ -37,6 +37,11 @@ public record F5Report(
         List<String> processesByMemory,
         List<String> runningServices,
         List<String> networkInterfaces,
+        List<String> systemUsers,
+        List<String> loggedUsers,
+        List<String> f5LoadHistory,
+        List<String> f5PartitionsPools,
+        List<String> outboundChecks,
         List<String> recentLogErrors,
         List<F5Check> checks
 ) {

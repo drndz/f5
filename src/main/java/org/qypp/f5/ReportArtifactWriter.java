@@ -18,7 +18,11 @@ public final class ReportArtifactWriter {
     }
 
     public static void write(Path markdownFile, List<F5Report> reports) throws IOException {
-        String markdown = MarkdownReportWriter.write(reports);
+        write(markdownFile, reports, false);
+    }
+
+    public static void write(Path markdownFile, List<F5Report> reports, boolean includeCommandDetails) throws IOException {
+        String markdown = MarkdownReportWriter.write(reports, includeCommandDetails);
         Files.writeString(markdownFile, markdown);
 
         Path htmlFile = sibling(markdownFile, ".html");
@@ -85,19 +89,25 @@ public final class ReportArtifactWriter {
                   <meta charset="utf-8">
                   <title>Validation Report</title>
                   <style>
-                    body { font-family: Arial, sans-serif; color: #111827; margin: 24px; font-size: 12px; }
+                    body { font-family: Arial, sans-serif; color: #111827; margin: 24px; font-size: 12px; background: #f8fafc; }
+                    body > h1, body > h2, body > h3, body > p, body > ul { max-width: 1600px; }
                     h1 { font-size: 24px; margin: 0 0 16px; }
-                    h2 { font-size: 18px; margin: 22px 0 10px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; }
+                    h2 { font-size: 18px; margin: 22px 0 10px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; color: #0f172a; }
                     h3 { font-size: 15px; margin: 18px 0 8px; }
                     p { margin: 6px 0; }
                     ul { margin: 6px 0 12px 18px; padding: 0; }
                     li { margin: 3px 0; }
-                    table { border-collapse: collapse; width: 100%; margin: 8px 0 14px; table-layout: auto; }
-                    th, td { border: 1px solid #cbd5e1; padding: 5px 6px; vertical-align: top; overflow-wrap: anywhere; }
-                    th { background: #f1f5f9; font-weight: 700; }
+                    .table-wrap { width: 100%; overflow-x: auto; margin: 8px 0 14px; background: #fff; border: 1px solid #cbd5e1; box-shadow: 0 1px 2px rgba(15,23,42,.06); }
+                    table { border-collapse: collapse; width: max-content; min-width: 100%; table-layout: auto; }
+                    th, td { border: 1px solid #e2e8f0; padding: 0; vertical-align: top; min-width: 72px; max-width: 360px; }
+                    .cell-scroll { box-sizing: border-box; max-width: 360px; overflow-x: auto; overflow-y: visible; padding: 6px 8px; white-space: normal; overflow-wrap: anywhere; }
+                    th .cell-scroll { max-height: none; white-space: nowrap; }
+                    tbody tr:nth-child(even) { background: #f8fafc; }
+                    th { background: #e2e8f0; font-weight: 700; position: sticky; top: 0; z-index: 1; }
                     small { font-size: 10px; }
                     code { font-family: Consolas, monospace; background: #f8fafc; padding: 1px 3px; }
                     details { display: block; }
+                    @keyframes cert-blink { 50% { opacity: .35; } }
                     @page { size: A4 landscape; margin: 10mm; }
                   </style>
                 </head>
@@ -146,21 +156,21 @@ public final class ReportArtifactWriter {
         if (tableLines.isEmpty()) {
             return;
         }
-        html.append("<table>\n");
+        html.append("<div class=\"table-wrap\"><table>\n");
         List<String> headers = tableCells(tableLines.get(0));
         html.append("<thead><tr>");
         for (String header : headers) {
-            html.append("<th>").append(inlineMarkdown(header)).append("</th>");
+            html.append("<th><div class=\"cell-scroll\">").append(inlineMarkdown(header)).append("</div></th>");
         }
         html.append("</tr></thead>\n<tbody>\n");
         for (int i = 2; i < tableLines.size(); i++) {
             html.append("<tr>");
             for (String cell : tableCells(tableLines.get(i))) {
-                html.append("<td>").append(inlineMarkdown(cell)).append("</td>");
+                html.append("<td><div class=\"cell-scroll\">").append(inlineMarkdown(cell)).append("</div></td>");
             }
             html.append("</tr>\n");
         }
-        html.append("</tbody>\n</table>\n");
+        html.append("</tbody>\n</table></div>\n");
     }
 
     private static List<String> tableCells(String line) {

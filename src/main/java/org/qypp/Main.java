@@ -39,13 +39,28 @@ public class Main {
     }
 
     private static void runFleet(String[] args) throws IOException {
-        if (args.length < 2) {
-            usage();
-            System.exit(2);
+        Path targetsFile = null;
+        Path outputDir = null;
+        boolean detailsSsh = false;
+        for (int i = 1; i < args.length; i++) {
+            if (args[i].equals("--details-ssh")) {
+                detailsSsh = true;
+            } else if (targetsFile == null) {
+                targetsFile = Path.of(args[i]);
+            } else if (outputDir == null) {
+                outputDir = Path.of(args[i]);
+            } else {
+                usage();
+                System.exit(2);
+            }
         }
-        Path targetsFile = Path.of(args[1]);
-        Path outputDir = args.length >= 3 ? Path.of(args[2]) : Path.of("f5-validation-results");
-        FleetSshValidator.run(targetsFile, outputDir, masterKey());
+        if (targetsFile == null) {
+            targetsFile = effectiveConfigDir().resolve("f5-targets.csv");
+        }
+        if (outputDir == null) {
+            outputDir = Path.of("f5-validation-results");
+        }
+        FleetSshValidator.run(targetsFile, outputDir, optionalMasterKey(), detailsSsh);
     }
 
     private static void generateReport(String[] args) throws IOException {
@@ -57,9 +72,15 @@ public class Main {
 
         Path inputDir = Path.of(args[inputIndex + 1]);
         Path output = Path.of("validation-report-" + safeTimestamp(Instant.now().toString()) + ".md");
+        boolean details = false;
         for (int i = inputIndex + 2; i < args.length; i++) {
             if (args[i].equals("--output") && i + 1 < args.length) {
                 output = Path.of(args[++i]);
+            } else if (args[i].equals("--details-report")) {
+                details = true;
+            } else {
+                usage();
+                System.exit(2);
             }
         }
 
@@ -70,7 +91,7 @@ public class Main {
             }
         }
 
-        ReportArtifactWriter.write(output, reports);
+        ReportArtifactWriter.write(output, reports, details);
         System.out.println("Wrote " + output.toAbsolutePath());
     }
 
@@ -101,11 +122,20 @@ public class Main {
     }
 
     private static String masterKey() {
-        String masterKey = System.getenv("F5_MASTER_KEY");
+        return masterKey(true);
+    }
+
+    private static String optionalMasterKey() {
+        return masterKey(false);
+    }
+
+    private static String masterKey(boolean required) {
+        String masterKey = System.getenv("MASTER_KEY");
         if (masterKey != null && !masterKey.isBlank()) {
             return masterKey.strip();
         }
-        Path keyFile = Path.of("config", ".F5_MASTER_KEY");
+        Path configDir = effectiveConfigDir();
+        Path keyFile = configDir.resolve(".MASTER_KEY");
         if (Files.isRegularFile(keyFile)) {
             try {
                 masterKey = Files.readString(keyFile).strip();
@@ -116,14 +146,39 @@ public class Main {
                 return masterKey;
             }
         }
-        throw new IllegalStateException("Master key is required. Create config/.F5_MASTER_KEY locally; it is ignored by git and must not be committed.");
+        if (!required) {
+            return "";
+        }
+        throw new IllegalStateException("Master key is required. Create " + configDir.resolve(".MASTER_KEY") + " locally; it is ignored by git and must not be committed.");
+    }
+
+    private static Path effectiveConfigDir() {
+        Path selectorFile = Path.of("config", ".conf_effective");
+        String selected = "real";
+        if (Files.isRegularFile(selectorFile)) {
+            try (Stream<String> lines = Files.lines(selectorFile)) {
+                selected = lines
+                        .map(String::strip)
+                        .filter(line -> !line.isBlank())
+                        .filter(line -> !line.startsWith("#"))
+                        .findFirst()
+                        .orElse("real");
+            } catch (IOException exception) {
+                throw new IllegalStateException("Could not read " + selectorFile + ".", exception);
+            }
+        }
+        Path selectedPath = Path.of(selected);
+        if (selectedPath.isAbsolute()) {
+            return selectedPath;
+        }
+        return Path.of("config").resolve(selectedPath);
     }
 
     private static void usage() {
         System.err.println("""
                 Usage:
-                  java -cp build/classes org.qypp.Main report --input-dir <json-dir> [--output report.md]
-                  java -cp build/classes:lib/* org.qypp.Main fleet <targets.csv> [output-dir]
+                  java -cp build/classes org.qypp.Main report --input-dir <json-dir> [--output report.md] [--details-report]
+                  java -cp build/classes:lib/* org.qypp.Main fleet [targets.csv] [output-dir] [--details-ssh]
                   java -cp build/classes org.qypp.Main encrypt-password [plain-password]
                   java -cp build/classes org.qypp.Main decrypt-password <encrypted-password>
                 """);

@@ -16,7 +16,7 @@ public final class F5ReportParser {
                 stringValue(json, "hostname"),
                 stringValue(json, "collected_at"),
                 stringValue(json, "status"),
-                stringValue(json, "privilege_mode", "standard"),
+                stringValue(json, "privilege_mode", "login-user"),
                 booleanValue(json, "privileged_collection"),
                 stringValue(json, "os"),
                 stringValue(json, "uptime"),
@@ -45,6 +45,11 @@ public final class F5ReportParser {
                 stringArray(json, "processes_by_memory"),
                 stringArray(json, "running_services"),
                 stringArray(json, "network_interfaces"),
+                stringArray(json, "system_users"),
+                stringArray(json, "logged_users"),
+                stringArray(json, "f5_load_history"),
+                stringArray(json, "f5_partitions_pools"),
+                stringArray(json, "outbound_checks"),
                 stringArray(json, "recent_log_errors"),
                 checks(json)
         );
@@ -55,8 +60,20 @@ public final class F5ReportParser {
     }
 
     private static String stringValue(String json, String key, String defaultValue) {
-        Matcher matcher = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"").matcher(json);
-        return matcher.find() ? unescape(matcher.group(1)) : defaultValue;
+        int keyStart = jsonStringIndex(json, key, 0);
+        while (keyStart >= 0) {
+            int afterKey = keyStart + key.length() + 2;
+            int colon = skipWhitespace(json, afterKey);
+            if (colon < json.length() && json.charAt(colon) == ':') {
+                int valueStart = skipWhitespace(json, colon + 1);
+                if (valueStart < json.length() && json.charAt(valueStart) == '"') {
+                    String value = readJsonString(json, valueStart);
+                    return value == null ? defaultValue : unescape(value);
+                }
+            }
+            keyStart = jsonStringIndex(json, key, afterKey);
+        }
+        return defaultValue;
     }
 
     private static int intValue(String json, String key) {
@@ -81,9 +98,33 @@ public final class F5ReportParser {
     private static List<String> stringArray(String json, String key) {
         String body = arrayBody(json, key);
         List<String> values = new ArrayList<>();
-        Matcher matcher = Pattern.compile("\"((?:\\\\.|[^\"])*)\"").matcher(body);
-        while (matcher.find()) {
-            values.add(unescape(matcher.group(1)));
+        boolean inString = false;
+        boolean escaped = false;
+        StringBuilder current = new StringBuilder();
+        for (int i = 0; i < body.length(); i++) {
+            char character = body.charAt(i);
+            if (!inString) {
+                if (character == '"') {
+                    inString = true;
+                    current.setLength(0);
+                }
+                continue;
+            }
+            if (escaped) {
+                current.append('\\').append(character);
+                escaped = false;
+                continue;
+            }
+            if (character == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (character == '"') {
+                values.add(unescape(current.toString()));
+                inString = false;
+                continue;
+            }
+            current.append(character);
         }
         return values;
     }
@@ -101,9 +142,7 @@ public final class F5ReportParser {
     private static List<F5Check> checks(String json) {
         String body = arrayBody(json, "checks");
         List<F5Check> checks = new ArrayList<>();
-        Matcher objectMatcher = Pattern.compile("\\{([^{}]*)}").matcher(body);
-        while (objectMatcher.find()) {
-            String object = objectMatcher.group(1);
+        for (String object : objectBodies(body)) {
             checks.add(new F5Check(
                     stringValue(object, "name"),
                     stringValue(object, "status"),
@@ -111,6 +150,45 @@ public final class F5ReportParser {
             ));
         }
         return checks;
+    }
+
+    private static List<String> objectBodies(String body) {
+        List<String> objects = new ArrayList<>();
+        int depth = 0;
+        int start = -1;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = 0; i < body.length(); i++) {
+            char current = body.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (current == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (current == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (inString) {
+                continue;
+            }
+            if (current == '{') {
+                if (depth == 0) {
+                    start = i + 1;
+                }
+                depth++;
+            } else if (current == '}') {
+                depth--;
+                if (depth == 0 && start >= 0) {
+                    objects.add(body.substring(start, i));
+                    start = -1;
+                }
+            }
+        }
+        return objects;
     }
 
     private static String arrayBody(String json, String key) {
@@ -146,6 +224,69 @@ public final class F5ReportParser {
             }
         }
         return "";
+    }
+
+    private static int jsonStringIndex(String json, String value, int fromIndex) {
+        for (int i = Math.max(0, fromIndex); i < json.length(); i++) {
+            if (json.charAt(i) != '"') {
+                continue;
+            }
+            String candidate = readJsonString(json, i);
+            if (value.equals(candidate)) {
+                return i;
+            }
+            i = skipJsonString(json, i);
+        }
+        return -1;
+    }
+
+    private static int skipWhitespace(String json, int index) {
+        int current = index;
+        while (current < json.length() && Character.isWhitespace(json.charAt(current))) {
+            current++;
+        }
+        return current;
+    }
+
+    private static String readJsonString(String json, int quoteIndex) {
+        StringBuilder value = new StringBuilder();
+        boolean escaped = false;
+        for (int i = quoteIndex + 1; i < json.length(); i++) {
+            char current = json.charAt(i);
+            if (escaped) {
+                value.append('\\').append(current);
+                escaped = false;
+                continue;
+            }
+            if (current == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (current == '"') {
+                return value.toString();
+            }
+            value.append(current);
+        }
+        return null;
+    }
+
+    private static int skipJsonString(String json, int quoteIndex) {
+        boolean escaped = false;
+        for (int i = quoteIndex + 1; i < json.length(); i++) {
+            char current = json.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (current == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (current == '"') {
+                return i;
+            }
+        }
+        return json.length() - 1;
     }
 
     private static String unescape(String text) {

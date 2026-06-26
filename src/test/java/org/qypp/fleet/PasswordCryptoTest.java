@@ -14,5 +14,11 @@ public final class PasswordCryptoTest {
         if (!"secret-password".equals(decrypted)) {
             throw new AssertionError("Password did not decrypt to original value.");
         }
+        if (!"plain-password".equals(PasswordCrypto.decryptOrPlain("plain-password", ""))) {
+            throw new AssertionError("Plain password values should be used without a master key.");
+        }
+        if (!"secret-password".equals(PasswordCrypto.decryptOrPlain(encrypted, masterKey))) {
+            throw new AssertionError("Encrypted password values should decrypt through decryptOrPlain.");
+        }
     }
 }

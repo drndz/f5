@@ -9,7 +9,7 @@ if [ "$#" -gt 1 ]; then
   exit 2
 fi
 
-load_f5_master_key "${ROOT_DIR}/config/.F5_MASTER_KEY"
+load_f5_master_key "$(effective_config_dir)/.MASTER_KEY"
 
 MAIN_CLASSES="$("${ROOT_DIR}/scripts/compile-java.sh")"
 LIB_CP="${ROOT_DIR}/lib/*"
