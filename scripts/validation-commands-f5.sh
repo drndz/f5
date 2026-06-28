@@ -19,7 +19,7 @@ tmsh show sys performance system 2>/dev/null || true
 ##CK28 # Read F5 connection performance counters through tmsh
 tmsh show sys performance connections 2>/dev/null || true
 
-##CK30 # Read F5 historical CPU and traffic RRD samples for the last 48 hours when rrdtool data exists
+##CK30 # Read F5 historical CPU, traffic, and connection RRD samples for the last 48 hours when rrdtool data exists
 if command -v rrdtool >/dev/null 2>&1; then
   find /var/rrd /shared/rrd.1.2 /shared/rrd* -type f \( \
     -iname '*cpu*' -o -iname '*load*' -o -iname '*system*' -o \

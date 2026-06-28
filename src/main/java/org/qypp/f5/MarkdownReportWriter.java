@@ -19,7 +19,10 @@ public final class MarkdownReportWriter {
     private static final DateTimeFormatter HISTORY_TIME = DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneOffset.UTC);
     private static final DateTimeFormatter HISTORY_HOUR = DateTimeFormatter.ofPattern("MM-dd HH:00").withZone(ZoneOffset.UTC);
     private static final int HISTORY_GRAPH_POINTS = 96;
-    private static final int HISTORY_BAR_STEP_PX = 6;
+    private static final int HISTORY_GRAPH_STEP_PX = 6;
+    private static final int HISTORY_GRAPH_HEIGHT_PX = 112;
+    private static final int HISTORY_GRAPH_LABEL_WIDTH_PX = 70;
+    private static final long HISTORY_AXIS_STEP_SECONDS = 6 * 3600L;
 
     private MarkdownReportWriter() {
     }
@@ -658,11 +661,11 @@ public final class MarkdownReportWriter {
                 .sorted(Comparator.comparing(F5Report::hostname))
                 .toList();
         if (f5Reports.isEmpty()) {
-            return "No F5 historical CPU or traffic time-series samples were collected. This requires local BIG-IP RRD files and `rrdtool` on the target.\n";
+            return "No F5 historical CPU, traffic, or connection time-series samples were collected. This requires local BIG-IP RRD files and `rrdtool` on the target.\n";
         }
 
         StringBuilder markdown = new StringBuilder();
-        markdown.append("Read-only CPU and traffic RRD samples from the last 48 hours of BIG-IP local history. Raw entries are the unmerged RRD rows from the JSON artifact; aggregated points are per-timestamp metric values after grouping related RRD data sources. Each compact graph draws up to ").append(HISTORY_GRAPH_POINTS).append(" evenly sampled points across the collected range and shows UTC hour labels every 3 hours on the X axis. The row-max trend uses 0-100% of the highest value visible in that row so the shape is easy to compare. The fixed-scale trend uses actual 0-100% load: CPU/load counters above 100 are converted from milli-percent style values, and traffic counters are plotted against a 1 Gbps reference when they are not already percentages.\n\n");
+        markdown.append("Read-only CPU, traffic, and connection-count RRD samples from the last 48 hours of BIG-IP local history. Raw entries are the unmerged RRD rows from the JSON artifact; aggregated points are per-timestamp metric values after grouping related RRD data sources. Each compact line graph draws up to ").append(HISTORY_GRAPH_POINTS).append(" evenly sampled points across the collected range and shows UTC hour labels every 6 hours positioned by actual elapsed time on the X axis. The row-max trend uses 0-100% of the highest value visible in that row so the shape is easy to compare. The fixed-scale trend uses actual 0-100% load: CPU/load counters above 100 are converted from milli-percent style values, traffic counters are throughput in bits/sec and are plotted against a 1 Gbps reference when they are not already percentages, and connection counters are plotted against the highest visible connection count.\n\n");
         markdown.append("| Label | Host | Metric | Raw entries | Aggregated points | Graph points | Trend (row max) | Trend (0-100%) |\n");
         markdown.append("| --- | --- | --- | ---: | ---: | ---: | --- | --- |\n");
         for (F5Report report : f5Reports) {
@@ -1309,6 +1312,9 @@ public final class MarkdownReportWriter {
         if (lower.contains("throughput") || lower.contains("traffic") || lower.contains("bwgain")) {
             return "Traffic";
         }
+        if (lower.contains("connection")) {
+            return "Connections";
+        }
         return "";
     }
 
@@ -1321,35 +1327,67 @@ public final class MarkdownReportWriter {
 
     private static String historyGraph(String metric, List<HistorySample> samples, boolean scaleToRowMax) {
         List<HistorySample> plotted = graphSamples(samples);
-        double max = plotted.stream().mapToDouble(HistorySample::value).max().orElse(0);
-        double min = plotted.stream().mapToDouble(HistorySample::value).min().orElse(0);
-        int graphWidth = Math.max(390, plotted.size() * HISTORY_BAR_STEP_PX);
+        double max = plotted.stream().mapToDouble(sample -> historyScaleValue(metric, sample.value())).max().orElse(0);
+        double min = plotted.stream().mapToDouble(sample -> historyScaleValue(metric, sample.value())).min().orElse(0);
+        double axisMax = scaleToRowMax ? max : fixedAxisMax(metric, max);
+        if (axisMax <= 0) {
+            axisMax = max;
+        }
+        HistoryDisplayUnit displayUnit = historyDisplayUnit(metric, axisMax);
+        int graphWidth = Math.max(390, plotted.size() * HISTORY_GRAPH_STEP_PX);
+        int svgWidth = graphWidth + HISTORY_GRAPH_LABEL_WIDTH_PX;
+        long start = plotted.get(0).epochSecond();
+        long end = plotted.get(plotted.size() - 1).epochSecond();
         StringBuilder html = new StringBuilder();
         html.append("<div style=\"display:inline-block;border:1px solid #cbd5e1;background:#f8fafc;padding:5px;min-width:")
-                .append(graphWidth).append("px\">");
+                .append(svgWidth).append("px\">");
         html.append("<div style=\"display:flex;justify-content:space-between;gap:12px;font-size:10px;color:#475569;margin-bottom:3px\">")
                 .append("<span>start ").append(escape(HISTORY_TIME.format(Instant.ofEpochSecond(plotted.get(0).epochSecond())))).append("</span>")
                 .append("<span>end ").append(escape(HISTORY_TIME.format(Instant.ofEpochSecond(plotted.get(plotted.size() - 1).epochSecond())))).append("</span>")
                 .append("</div>");
         if (scaleToRowMax) {
-            html.append("<div style=\"font-size:10px;color:#475569;margin-bottom:3px\">Y axis: 0-100% of row max; labels are raw RRD values</div>");
+            html.append("<div style=\"font-size:10px;color:#475569;margin-bottom:3px\">Y axis: 0 to ")
+                    .append(escape(formatHistoryDisplayValue(metric, axisMax, displayUnit)))
+                    .append(" (row max); unit ").append(escape(displayUnit.label())).append("</div>");
         } else {
-            html.append("<div style=\"font-size:10px;color:#475569;margin-bottom:3px\">Y axis: fixed 0-100%; CPU/load converted to %, traffic uses 1 Gbps reference</div>");
+            html.append("<div style=\"font-size:10px;color:#475569;margin-bottom:3px\">Y axis: fixed 0 to ")
+                    .append(escape(formatHistoryDisplayValue(metric, axisMax, displayUnit)))
+                    .append("; unit ").append(escape(displayUnit.label())).append("</div>");
         }
-        html.append("<div style=\"white-space:nowrap;width:").append(graphWidth).append("px\">");
+        html.append("<svg width=\"").append(svgWidth).append("\" height=\"").append(HISTORY_GRAPH_HEIGHT_PX)
+                .append("\" viewBox=\"0 0 ").append(svgWidth).append(" ").append(HISTORY_GRAPH_HEIGHT_PX)
+                .append("\" xmlns=\"http://www.w3.org/2000/svg\" role=\"img\" aria-label=\"")
+                .append(escape(metric)).append(" history line graph\">")
+                .append("<rect x=\"0\" y=\"0\" width=\"").append(svgWidth).append("\" height=\"").append(HISTORY_GRAPH_HEIGHT_PX)
+                .append("\" fill=\"#eef2f7\"/>")
+                .append("<text x=\"2\" y=\"10\" font-size=\"9\" fill=\"#334155\">").append(escape(formatHistoryDisplayValue(metric, axisMax, displayUnit))).append("</text>")
+                .append("<text x=\"2\" y=\"").append(HISTORY_GRAPH_HEIGHT_PX / 2 + 3).append("\" font-size=\"9\" fill=\"#334155\">").append(escape(formatHistoryDisplayValue(metric, axisMax / 2.0, displayUnit))).append("</text>")
+                .append("<text x=\"2\" y=\"").append(HISTORY_GRAPH_HEIGHT_PX - 3).append("\" font-size=\"9\" fill=\"#334155\">").append(escape(formatHistoryDisplayValue(metric, 0, displayUnit))).append("</text>")
+                .append("<line x1=\"").append(HISTORY_GRAPH_LABEL_WIDTH_PX).append("\" y1=\"").append(HISTORY_GRAPH_HEIGHT_PX - 1).append("\" x2=\"").append(svgWidth)
+                .append("\" y2=\"").append(HISTORY_GRAPH_HEIGHT_PX - 1).append("\" stroke=\"#cbd5e1\" stroke-width=\"1\"/>")
+                .append("<line x1=\"").append(HISTORY_GRAPH_LABEL_WIDTH_PX).append("\" y1=\"").append(HISTORY_GRAPH_HEIGHT_PX / 2).append("\" x2=\"").append(svgWidth)
+                .append("\" y2=\"").append(HISTORY_GRAPH_HEIGHT_PX / 2).append("\" stroke=\"#dbe4ef\" stroke-width=\"1\"/>");
+        StringBuilder points = new StringBuilder();
+        String color = "#2563eb";
         for (HistorySample sample : plotted) {
-            long pct = scaleToRowMax ? (max <= 0 ? 0 : Math.round(sample.value() * 100.0 / max)) : fixedScalePercent(metric, sample.value());
+            double value = historyScaleValue(metric, sample.value());
+            long pct = axisMax <= 0 ? 0 : Math.round(value * 100.0 / axisMax);
             pct = Math.max(0, Math.min(100, pct));
-            String color = pct >= 80 ? "#dc2626" : pct >= 60 ? "#f59e0b" : "#2563eb";
-            html.append("<span style=\"display:inline-block;box-sizing:border-box;width:5px;height:56px;margin-right:1px;vertical-align:bottom;background:linear-gradient(to top,")
-                    .append(color).append(" 0%,").append(color).append(" ").append(pct)
-                    .append("%,#e5e7eb ").append(pct).append("%,#e5e7eb 100%);border:1px solid #cbd5e1\"></span>");
+            color = pct >= 80 ? "#dc2626" : pct >= 60 ? "#f59e0b" : color;
+            double x = HISTORY_GRAPH_LABEL_WIDTH_PX + (timePositionPercent(start, end, sample.epochSecond()) * graphWidth / 100.0);
+            double y = HISTORY_GRAPH_HEIGHT_PX - 4 - (pct * (HISTORY_GRAPH_HEIGHT_PX - 8) / 100.0);
+            if (!points.isEmpty()) {
+                points.append(' ');
+            }
+            points.append(String.format(java.util.Locale.ROOT, "%.1f,%.1f", x, y));
         }
-        html.append("</div>")
-                .append(hourAxis(plotted, graphWidth))
+        html.append("<polyline points=\"").append(points).append("\" fill=\"none\" stroke=\"").append(color)
+                .append("\" stroke-width=\"2\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>")
+                .append("</svg>")
+                .append(hourAxis(plotted, svgWidth, HISTORY_GRAPH_LABEL_WIDTH_PX, graphWidth))
                 .append("<div style=\"display:flex;justify-content:space-between;gap:12px;font-size:10px;color:#475569;margin-top:3px\">")
-                .append("<span>low ").append(escape(format(min))).append("</span>")
-                .append("<span>high ").append(escape(format(max))).append("</span>")
+                .append("<span>low ").append(escape(formatHistoryDisplayValue(metric, min, displayUnit))).append("</span>")
+                .append("<span>high ").append(escape(formatHistoryDisplayValue(metric, max, displayUnit))).append("</span>")
                 .append("</div></div>");
         return html.toString();
     }
@@ -1371,35 +1409,35 @@ public final class MarkdownReportWriter {
         return selected;
     }
 
-    private static String hourAxis(List<HistorySample> samples, int graphWidth) {
+    private static String hourAxis(List<HistorySample> samples, int axisWidth, int plotOffset, int plotWidth) {
         if (samples.isEmpty()) {
             return "";
         }
         long start = samples.get(0).epochSecond();
         long end = samples.get(samples.size() - 1).epochSecond();
-        long step = 3 * 3600L;
+        long step = HISTORY_AXIS_STEP_SECONDS;
         long tick = ((start + step - 1) / step) * step;
         List<HistoryTick> ticks = new ArrayList<>();
         while (tick <= end) {
-            ticks.add(new HistoryTick(nearestSampleIndex(samples, tick), HISTORY_HOUR.format(Instant.ofEpochSecond(tick))));
+            ticks.add(new HistoryTick(timePositionPercent(start, end, tick), HISTORY_HOUR.format(Instant.ofEpochSecond(tick))));
             tick += step;
         }
         if (ticks.isEmpty()) {
             ticks.add(new HistoryTick(0, HISTORY_HOUR.format(Instant.ofEpochSecond(start))));
             if (end != start) {
-                ticks.add(new HistoryTick(samples.size() - 1, HISTORY_HOUR.format(Instant.ofEpochSecond(end))));
+                ticks.add(new HistoryTick(100, HISTORY_HOUR.format(Instant.ofEpochSecond(end))));
             }
         }
         StringBuilder html = new StringBuilder();
-        html.append("<div style=\"font-size:10px;color:#475569;margin-top:3px\">X axis UTC hours every 3h</div>");
-        html.append("<div style=\"position:relative;width:").append(graphWidth)
+        html.append("<div style=\"font-size:10px;color:#475569;margin-top:3px\">X axis UTC hours every 6h</div>");
+        html.append("<div style=\"position:relative;width:").append(axisWidth)
                 .append("px;height:34px;border-top:1px solid #cbd5e1;margin-top:2px\">");
         for (HistoryTick historyTick : ticks) {
-            double left = samples.size() <= 1 ? 0.0 : historyTick.index() * 100.0 / (samples.size() - 1);
-            html.append("<span style=\"position:absolute;left:").append(String.format(java.util.Locale.ROOT, "%.2f", left))
-                    .append("%;top:0;height:6px;border-left:1px solid #64748b\"></span>");
-            html.append("<span style=\"position:absolute;left:").append(String.format(java.util.Locale.ROOT, "%.2f", left))
-                    .append("%;top:8px;transform:translateX(-50%) rotate(-45deg);transform-origin:top center;white-space:nowrap;color:#475569\">")
+            double left = plotOffset + (historyTick.leftPercent() * plotWidth / 100.0);
+            html.append("<span style=\"position:absolute;left:").append(String.format(java.util.Locale.ROOT, "%.1f", left))
+                    .append("px;top:0;height:6px;border-left:1px solid #64748b\"></span>");
+            html.append("<span style=\"position:absolute;left:").append(String.format(java.util.Locale.ROOT, "%.1f", left))
+                    .append("px;top:8px;transform:translateX(-50%) rotate(-45deg);transform-origin:top center;white-space:nowrap;color:#475569\">")
                     .append(escape(historyTick.label()))
                     .append("</span>");
         }
@@ -1407,33 +1445,72 @@ public final class MarkdownReportWriter {
         return html.toString();
     }
 
-    private static int nearestSampleIndex(List<HistorySample> samples, long epochSecond) {
-        int nearest = 0;
-        long bestDistance = Long.MAX_VALUE;
-        for (int i = 0; i < samples.size(); i++) {
-            long distance = Math.abs(samples.get(i).epochSecond() - epochSecond);
-            if (distance < bestDistance) {
-                nearest = i;
-                bestDistance = distance;
-            }
-        }
-        return nearest;
-    }
-
-    private static long fixedScalePercent(String metric, double value) {
-        if (value <= 0) {
+    private static double timePositionPercent(long start, long end, long value) {
+        if (end <= start) {
             return 0;
         }
+        double pct = (value - start) * 100.0 / (end - start);
+        return Math.max(0, Math.min(100, pct));
+    }
+
+    private static double historyScaleValue(String metric, double value) {
         if ("CPU".equalsIgnoreCase(metric)) {
-            double percent = value <= 100 ? value : value / 1000.0;
-            return Math.round(percent);
+            return value <= 100 ? value : value / 1000.0;
+        }
+        return value;
+    }
+
+    private static double fixedAxisMax(String metric, double rowMax) {
+        if ("CPU".equalsIgnoreCase(metric)) {
+            return 100.0;
         }
         if ("Traffic".equalsIgnoreCase(metric)) {
-            double percent = value <= 100 ? value : (value * 100.0 / 1_000_000_000.0);
-            long rounded = Math.round(percent);
-            return rounded == 0 ? 1 : rounded;
+            return 1_000_000_000.0;
         }
-        return Math.round(value);
+        return rowMax;
+    }
+
+    private static HistoryDisplayUnit historyDisplayUnit(String metric, double axisMax) {
+        if ("Traffic".equalsIgnoreCase(metric)) {
+            double abs = Math.abs(axisMax);
+            if (abs >= 1_000_000_000.0) {
+                return new HistoryDisplayUnit("Gbps", 1_000_000_000.0);
+            }
+            if (abs >= 1_000_000.0) {
+                return new HistoryDisplayUnit("Mbps", 1_000_000.0);
+            }
+            if (abs >= 1_000.0) {
+                return new HistoryDisplayUnit("Kbps", 1_000.0);
+            }
+            return new HistoryDisplayUnit("bps", 1.0);
+        }
+        if ("CPU".equalsIgnoreCase(metric)) {
+            return new HistoryDisplayUnit("%", 1.0);
+        }
+        if ("Connections".equalsIgnoreCase(metric)) {
+            return new HistoryDisplayUnit("conn", 1.0);
+        }
+        return new HistoryDisplayUnit("raw", 1.0);
+    }
+
+    private static String formatHistoryDisplayValue(String metric, double value, HistoryDisplayUnit displayUnit) {
+        if ("CPU".equalsIgnoreCase(metric)) {
+            return format(value) + "%";
+        }
+        if ("Connections".equalsIgnoreCase(metric)) {
+            return formatCount(value) + " conn";
+        }
+        if ("Traffic".equalsIgnoreCase(metric)) {
+            return format(value / displayUnit.divisor()) + " " + displayUnit.label();
+        }
+        return format(value) + " " + displayUnit.label();
+    }
+
+    private static String formatCount(double value) {
+        if (value == Math.rint(value)) {
+            return Long.toString(Math.round(value));
+        }
+        return format(value);
     }
 
     private static String shortSourceName(String source) {
@@ -1452,7 +1529,10 @@ public final class MarkdownReportWriter {
     private record HistorySeries(int rawEntries, List<HistorySample> samples) {
     }
 
-    private record HistoryTick(int index, String label) {
+    private record HistoryTick(double leftPercent, String label) {
+    }
+
+    private record HistoryDisplayUnit(String label, double divisor) {
     }
 
     private record HistorySample(long epochSecond, double value) {

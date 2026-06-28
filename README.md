@@ -69,13 +69,14 @@ Optional outbound connectivity checks are read from `<effective-config>/vm_outbo
 CSV format:
 
 ```csv
-name,host,port,protocol
-external-https,203.0.113.10,443,TCP
-external-dns,203.0.113.53,53,UDP
-external-radius-sim,203.0.113.181,1812,UDP
+name,host,port,protocol,check_type
+external-https,203.0.113.10,443,TCP,TLS
+external-tcp,203.0.113.10,80,TCP,CONNECT
+external-dns,203.0.113.53,53,UDP,DNS
+external-radius-sim,203.0.113.181,1812,UDP,RADIUS
 ```
 
-`protocol` must be `TCP` or `UDP`. The `host` value can be either a DNS name or an IP address. DNS is resolved on the remote VM/F5, and the report shows both the configured host and the resolved IP. TCP checks use `nc` when available, otherwise Bash `/dev/tcp`. UDP checks require `nc`/netcat on the target. UDP port `53` sends a minimal DNS query packet, UDP ports `1812` and `1813` send a minimal RADIUS-style packet, and other UDP ports send a one-byte generic datagram. UDP checks report bytes sent and bytes received; they pass only when response bytes are received. Results are shown in the report under `Outbound Connectivity`.
+`protocol` must be `TCP` or `UDP`. `check_type` is optional for older four-column files, but recommended. For `TCP`, use `CONNECT` for a plain TCP connect check or `TLS` to connect with OpenSSL and extract the returned certificate and chain. For `UDP`, use `DNS` to send a valid DNS wire-format `A example.com IN` query or `RADIUS` to send a minimal RADIUS-style datagram. The `host` value can be either a DNS name or an IP address. DNS is resolved on the remote VM/F5, and the report shows both the configured host and the resolved IP. TCP checks use `nc` when available, otherwise Bash `/dev/tcp`. UDP checks require `nc`/netcat on the target and keep the socket open for a short receive window before counting response bytes. UDP checks report bytes sent and bytes received; they pass only when response bytes are received. Results are shown in the report under `Outbound Connectivity`.
 
 Optional F5 partition/pool filtering is read from `<effective-config>/.part_prefix_filter` when that file exists. Put one partition-name prefix on the first non-comment line:
 
@@ -89,7 +90,7 @@ With this file present, only F5 partitions whose names start with `MyTenant` are
 
 For F5 targets, the partition/pool inventory also correlates pool members, virtual servers, client SSL profiles, configured certificate objects, chain certificate objects, and virtual-server runtime statistics. Installed certificate metadata is read from each partition with `tmsh list sys crypto cert`. Certificate start/end dates are enriched from BIG-IP's public certificate file objects by asking tmsh for `sys file ssl-cert ... cache-path` and passing that tmsh-returned public certificate asset to `openssl x509 -startdate -enddate`; the validator does not scan `/config/ssl/ssl.crt`, `/config/filestore`, or guess certificate filenames. This remains compatible with HSM-backed private keys because only the public certificate object is read, not private key material. The report shows certificate fields that tmsh returns, including expiry, subject, issuer, common name, fingerprint, key size, and issuer-certificate references when present. A certificate start date is shown only when it is returned by the tmsh certificate repository path; it is not guessed from file timestamps or object creation time. The report shows each VIP destination, protocol, pool member IP:port values, current VIP connections, bits/bytes/packets in and out when exposed by BIG-IP, SSL profile, certificate validity, and chain details. Pool member IP:port values discovered from F5 pools are also tested from the F5 using the outbound connectivity check command and appear in `Outbound Connectivity` as `pool:<partition>/<pool>:<ip>:<port>` rows.
 
-When `rrdtool` is available on an F5 target, the report also includes the last 48 hours of read-only RRD time-series from useful local CPU and traffic files such as `cpu`, `rollupcpu`, `throughput`, `connections`, `bladeconnections`, `bwgain`, and related BIG-IP RRDs. Each RRD data source is shown as a normalized graph with raw min/max values.
+When `rrdtool` is available on an F5 target, the report also includes the last 48 hours of read-only RRD time-series from useful local CPU, traffic, and connection files such as `cpu`, `rollupcpu`, `throughput`, `connections`, `bladeconnections`, `bwgain`, and related BIG-IP RRDs. Traffic values are reported as throughput in bits/sec with Kbps/Mbps/Gbps labels, not cumulative GB/MB transfer. Each RRD data source is shown as a normalized line graph with raw min/max values.
 
 Run the validation across all configured SSH targets:
 

@@ -259,17 +259,36 @@ public final class FleetSshValidator {
     private record ProcessRow(String pid, double cpuPercent, double memoryPercent, long rssKb, long sharedKb, String command) {
     }
 
-    private record OutboundCheck(String name, String host, int port, String protocol) {
+    private record OutboundCheck(String name, String host, int port, String protocol, String checkType, boolean explicitCheckType) {
         static OutboundCheck parse(String line) {
             String[] parts = line.split(",", -1);
             if (parts.length < 4) {
-                throw new IllegalArgumentException("Expected CSV columns: name,host,port,protocol");
+                throw new IllegalArgumentException("Expected CSV columns: name,host,port,protocol,check_type");
             }
             String protocol = parts[3].trim().toUpperCase(java.util.Locale.ROOT);
             if (!"TCP".equals(protocol) && !"UDP".equals(protocol)) {
                 throw new IllegalArgumentException("Outbound check protocol must be TCP or UDP: " + parts[3]);
             }
-            return new OutboundCheck(parts[0].trim(), parts[1].trim(), Integer.parseInt(parts[2].trim()), protocol);
+            boolean explicitType = parts.length >= 5 && !parts[4].isBlank();
+            String checkType = explicitType ? parts[4].trim().toUpperCase(java.util.Locale.ROOT) : defaultCheckType(protocol);
+            validateCheckType(protocol, checkType);
+            return new OutboundCheck(parts[0].trim(), parts[1].trim(), Integer.parseInt(parts[2].trim()), protocol, checkType, explicitType);
+        }
+
+        private static String defaultCheckType(String protocol) {
+            return "TCP".equals(protocol) ? "CONNECT" : "AUTO";
+        }
+
+        private static void validateCheckType(String protocol, String checkType) {
+            if ("TCP".equals(protocol)) {
+                if (!"CONNECT".equals(checkType) && !"TLS".equals(checkType)) {
+                    throw new IllegalArgumentException("TCP outbound check type must be CONNECT or TLS: " + checkType);
+                }
+                return;
+            }
+            if (!"AUTO".equals(checkType) && !"DNS".equals(checkType) && !"RADIUS".equals(checkType)) {
+                throw new IllegalArgumentException("UDP outbound check type must be AUTO, DNS, or RADIUS: " + checkType);
+            }
         }
     }
 
@@ -1293,9 +1312,10 @@ public final class FleetSshValidator {
                 continue;
             }
             for (String protocol : protocols) {
-                checks.add(new OutboundCheck("pool:" + pool.partition() + "/" + pool.name() + ":" + protocol + ":" + member.address() + ":" + member.port(), member.address(), member.port(), protocol));
+                String checkType = "TCP".equalsIgnoreCase(protocol) ? "CONNECT" : "AUTO";
+                checks.add(new OutboundCheck("pool:" + pool.partition() + "/" + pool.name() + ":" + protocol + ":" + member.address() + ":" + member.port(), member.address(), member.port(), protocol, checkType, true));
             }
-            checks.add(new OutboundCheck("pool:" + pool.partition() + "/" + pool.name() + ":TLS:" + member.address() + ":" + member.port(), member.address(), member.port(), "TLS"));
+            checks.add(new OutboundCheck("pool:" + pool.partition() + "/" + pool.name() + ":TLS:" + member.address() + ":" + member.port(), member.address(), member.port(), "TCP", "TLS", true));
         }
     }
 
@@ -1929,7 +1949,7 @@ public final class FleetSshValidator {
         List<String> results = new ArrayList<>();
         String timeoutSeconds = env("OUTBOUND_CHECK_TIMEOUT_SECONDS", "5");
         for (OutboundCheck check : checks) {
-            if ("TLS".equalsIgnoreCase(check.protocol())) {
+            if ("TCP".equalsIgnoreCase(check.protocol()) && "TLS".equalsIgnoreCase(check.checkType())) {
                 results.add(tlsOutboundCheck(ssh, commands, check, timeoutSeconds));
                 continue;
             }
@@ -1938,6 +1958,7 @@ public final class FleetSshValidator {
                     "HOST", shellQuote(check.host()),
                     "PORT", Integer.toString(check.port()),
                     "PROTOCOL", shellQuote(check.protocol()),
+                    "CHECK_TYPE", shellQuote(check.checkType()),
                     "TIMEOUT_SECONDS", timeoutSeconds
             ));
             long started = System.nanoTime();
@@ -1947,8 +1968,8 @@ public final class FleetSshValidator {
             boolean unknown = output.contains("OUTBOUND_CHECK_UNKNOWN");
             results.add(check.name() + "|" + check.host() + "|" + resolvedIp(output, check.host()) + "|" + check.port() + "|" + check.protocol() + "|"
                     + (pass ? "PASS" : unknown ? "UNKNOWN" : "FAIL") + "|" + oneLine(output + "\nELAPSED_MS=" + elapsedMillis));
-            if (addTlsForTcp && "TCP".equalsIgnoreCase(check.protocol())) {
-                results.add(tlsOutboundCheck(ssh, commands, new OutboundCheck(check.name() + ":TLS", check.host(), check.port(), "TLS"), timeoutSeconds));
+            if (addTlsForTcp && "TCP".equalsIgnoreCase(check.protocol()) && !check.explicitCheckType()) {
+                results.add(tlsOutboundCheck(ssh, commands, new OutboundCheck(check.name() + ":TLS", check.host(), check.port(), "TCP", "TLS", true), timeoutSeconds));
             }
         }
         return results;
@@ -1957,7 +1978,7 @@ public final class FleetSshValidator {
     private static String tlsOutboundCheck(SshCommandClient ssh, ValidationCommands commands, OutboundCheck check, String timeoutSeconds) {
         if (!commands.hasCommand("CK34")) {
             String detail = "OUTBOUND_CHECK_UNKNOWN RESOLVED_IP=" + check.host() + " TLS_CERT_PRESENT=0; TLS_ERROR=TLS probe command is not defined";
-            return check.name() + "|" + check.host() + "|" + check.host() + "|" + check.port() + "|" + check.protocol() + "|UNKNOWN|" + detail;
+            return check.name() + "|" + check.host() + "|" + check.host() + "|" + check.port() + "|TLS|UNKNOWN|" + detail;
         }
         ValidationCommand command = commands.command("CK34", Map.of(
                 "HOST", shellQuote(check.host()),
@@ -1975,7 +1996,7 @@ public final class FleetSshValidator {
         output = output + "\nELAPSED_MS=" + elapsedMillis;
         boolean pass = output.contains("OUTBOUND_CHECK_PASS");
         boolean unknown = output.contains("OUTBOUND_CHECK_UNKNOWN");
-        return check.name() + "|" + check.host() + "|" + resolvedIp(output, check.host()) + "|" + check.port() + "|" + check.protocol() + "|"
+        return check.name() + "|" + check.host() + "|" + resolvedIp(output, check.host()) + "|" + check.port() + "|TLS|"
                 + (pass ? "PASS" : unknown ? "UNKNOWN" : "FAIL") + "|" + oneLine(output);
     }
 

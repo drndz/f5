@@ -149,9 +149,10 @@ class MarkdownReportWriterTest {
         TestSupport.assertTrue(markdown.contains("| edge-a | f5-a | CPU | 2 | 2 | 2 |"), "F5 RRD history should show raw, aggregated, and graphed CPU sample counts.");
         TestSupport.assertTrue(markdown.contains("| edge-a | f5-a | Traffic | 1 | 1 | 1 |"), "F5 RRD history should show raw, aggregated, and graphed traffic sample counts.");
         TestSupport.assertTrue(markdown.contains("| Label | Host | Metric | Raw entries | Aggregated points | Graph points | Trend (row max) | Trend (0-100%) |"), "F5 load history should include raw, aggregated, graph point, row-max, and fixed-scale trend columns.");
-        TestSupport.assertTrue(markdown.contains("X axis UTC hours every 3h"), "F5 load history should show three-hour labels on the X axis.");
-        TestSupport.assertTrue(markdown.contains("Y axis: 0-100% of row max; labels are raw RRD values"), "F5 load history should explain trend graph units.");
-        TestSupport.assertTrue(markdown.contains("Y axis: fixed 0-100%; CPU/load converted to %, traffic uses 1 Gbps reference"), "F5 load history should explain fixed-scale graph units.");
+        TestSupport.assertTrue(markdown.contains("X axis UTC hours every 6h"), "F5 load history should show six-hour labels on the X axis.");
+        TestSupport.assertTrue(markdown.contains("Y axis: 0 to"), "F5 load history should show actual row-max Y-axis values.");
+        TestSupport.assertTrue(markdown.contains("Y axis: fixed 0 to"), "F5 load history should show actual fixed-scale Y-axis values.");
+        TestSupport.assertTrue(markdown.contains("<polyline"), "F5 load history should render line graphs.");
         TestSupport.assertTrue(!markdown.contains("| Values |"), "F5 load history should not include a separate values column.");
         TestSupport.assertTrue(markdown.contains("## F5 Partitions And Pools"), "Report should include F5 partition and pool section.");
         TestSupport.assertTrue(markdown.contains("| Label | Host | Partition | Type | Pool/VIP | VIP destination | Protocol | Inbound VIP stats | Inbound VIP client SSL profile | Inbound VIP cert | Inbound VIP cert validity | Inbound VIP chain | Partition traffic | Pool members | Remote pool member checks | Pool outbound server SSL profile | F5 outbound client cert | F5 outbound client cert validity | F5 outbound client chain | Detail |"), "F5 partition/pool summary should separate inbound VIP certificates from pool outbound certificates.");

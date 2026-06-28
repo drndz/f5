@@ -76,6 +76,7 @@ cat /etc/passwd 2>/dev/null; echo __LASTLOG__; lastlog 2>/dev/null || true
 host=${HOST}
 port=${PORT}
 protocol=$(printf '%s' ${PROTOCOL} | tr '[:lower:]' '[:upper:]')
+check_type=$(printf '%s' ${CHECK_TYPE} | tr '[:lower:]' '[:upper:]')
 check_name=${CHECK_NAME}
 timeout_seconds=${TIMEOUT_SECONDS}
 status=1
@@ -108,29 +109,37 @@ elif [ "${protocol}" = "UDP" ]; then
     dns_received_bytes=0
     radius_received_bytes=0
     dns_probe_enabled=0
+    radius_probe_enabled=0
     check_name_lower=$(printf '%s' "${check_name}" | tr '[:upper:]' '[:lower:]')
-    if [ "${port}" = "53" ] || printf '%s' "${check_name_lower}" | grep -q 'dns'; then
+    if [ "${check_type}" = "DNS" ] || { [ "${check_type}" = "AUTO" ] && { [ "${port}" = "53" ] || printf '%s' "${check_name_lower}" | grep -q 'dns'; }; }; then
       dns_probe_enabled=1
     fi
+    if [ "${check_type}" = "RADIUS" ] || { [ "${check_type}" = "AUTO" ] && { [ "${port}" = "1812" ] || [ "${port}" = "1813" ] || printf '%s' "${check_name_lower}" | grep -q 'radius'; }; }; then
+      radius_probe_enabled=1
+    fi
+    dns_query_bytes=29
+    udp_response_wait_seconds=2
     if [ "${dns_probe_enabled}" -eq 1 ]; then
       if command -v timeout >/dev/null 2>&1; then
-        dns_received_bytes=$(printf '\022\064\001\000\000\001\000\000\000\000\000\000\000\000\001\000\001' | timeout "${timeout_seconds}" nc -u -w "${timeout_seconds}" "${host}" "${port}" 2>/dev/null | wc -c | awk '{print $1}')
+        dns_received_bytes=$({ printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001'; sleep "${udp_response_wait_seconds}"; } | timeout "${timeout_seconds}" nc -u -w "${timeout_seconds}" "${host}" "${port}" 2>/dev/null | wc -c | awk '{print $1}')
       else
-        dns_received_bytes=$(printf '\022\064\001\000\000\001\000\000\000\000\000\000\000\000\001\000\001' | nc -u -w "${timeout_seconds}" "${host}" "${port}" 2>/dev/null | wc -c | awk '{print $1}')
+        dns_received_bytes=$({ printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001'; sleep "${udp_response_wait_seconds}"; } | nc -u -w "${timeout_seconds}" "${host}" "${port}" 2>/dev/null | wc -c | awk '{print $1}')
       fi
     fi
-    if command -v timeout >/dev/null 2>&1; then
-      radius_received_bytes=$(printf '\001\001\000\024\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' | timeout "${timeout_seconds}" nc -u -w "${timeout_seconds}" "${host}" "${port}" 2>/dev/null | wc -c | awk '{print $1}')
-    else
-      radius_received_bytes=$(printf '\001\001\000\024\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' | nc -u -w "${timeout_seconds}" "${host}" "${port}" 2>/dev/null | wc -c | awk '{print $1}')
+    if [ "${radius_probe_enabled}" -eq 1 ]; then
+      if command -v timeout >/dev/null 2>&1; then
+        radius_received_bytes=$({ printf '\001\001\000\024\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000'; sleep "${udp_response_wait_seconds}"; } | timeout "${timeout_seconds}" nc -u -w "${timeout_seconds}" "${host}" "${port}" 2>/dev/null | wc -c | awk '{print $1}')
+      else
+        radius_received_bytes=$({ printf '\001\001\000\024\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000'; sleep "${udp_response_wait_seconds}"; } | nc -u -w "${timeout_seconds}" "${host}" "${port}" 2>/dev/null | wc -c | awk '{print $1}')
+      fi
     fi
     if [ -z "${dns_received_bytes}" ]; then dns_received_bytes=0; fi
     if [ -z "${radius_received_bytes}" ]; then radius_received_bytes=0; fi
     if [ "${dns_received_bytes}" -gt 0 ] 2>/dev/null || [ "${radius_received_bytes}" -gt 0 ] 2>/dev/null; then
-      output="UDP_DNS_PROBE_ENABLED=${dns_probe_enabled} UDP_DNS_BYTES_SENT=$([ "${dns_probe_enabled}" -eq 1 ] && echo 17 || echo 0) UDP_DNS_BYTES_RECEIVED=${dns_received_bytes} UDP_RADIUS_BYTES_SENT=20 UDP_RADIUS_BYTES_RECEIVED=${radius_received_bytes} Response bytes were received from at least one UDP probe."
+      output="UDP_CHECK_TYPE=${check_type} UDP_RESPONSE_WAIT_SECONDS=${udp_response_wait_seconds} UDP_DNS_PROBE_ENABLED=${dns_probe_enabled} UDP_DNS_QUERY=example.com/A UDP_DNS_BYTES_SENT=$([ "${dns_probe_enabled}" -eq 1 ] && echo "${dns_query_bytes}" || echo 0) UDP_DNS_BYTES_RECEIVED=${dns_received_bytes} UDP_RADIUS_PROBE_ENABLED=${radius_probe_enabled} UDP_RADIUS_BYTES_SENT=$([ "${radius_probe_enabled}" -eq 1 ] && echo 20 || echo 0) UDP_RADIUS_BYTES_RECEIVED=${radius_received_bytes} Response bytes were received from at least one UDP probe."
       status=0
     else
-      output="UDP_DNS_PROBE_ENABLED=${dns_probe_enabled} UDP_DNS_BYTES_SENT=$([ "${dns_probe_enabled}" -eq 1 ] && echo 17 || echo 0) UDP_DNS_BYTES_RECEIVED=${dns_received_bytes} UDP_RADIUS_BYTES_SENT=20 UDP_RADIUS_BYTES_RECEIVED=${radius_received_bytes} No response bytes were received; UDP packet send alone does not prove service reachability."
+      output="UDP_CHECK_TYPE=${check_type} UDP_RESPONSE_WAIT_SECONDS=${udp_response_wait_seconds} UDP_DNS_PROBE_ENABLED=${dns_probe_enabled} UDP_DNS_QUERY=example.com/A UDP_DNS_BYTES_SENT=$([ "${dns_probe_enabled}" -eq 1 ] && echo "${dns_query_bytes}" || echo 0) UDP_DNS_BYTES_RECEIVED=${dns_received_bytes} UDP_RADIUS_PROBE_ENABLED=${radius_probe_enabled} UDP_RADIUS_BYTES_SENT=$([ "${radius_probe_enabled}" -eq 1 ] && echo 20 || echo 0) UDP_RADIUS_BYTES_RECEIVED=${radius_received_bytes} No response bytes were received; UDP packet send alone does not prove service reachability."
       status=3
     fi
   else
