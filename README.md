@@ -23,10 +23,25 @@ To configure a specific JDK for this checkout, write its directory to `<effectiv
 printf 'C:\Program Files\Java\jdk-17' > config/real/.JDK
 ```
 
+`config/sample/.JDK` is only a reference example. Put the real local JDK path in `config/real/.JDK` or set `F5_VALIDATION_JDK_HOME`.
+
+`config/sample/.BASH` is a reference value for the local Git Bash executable path on Windows. The Bash scripts do not auto-read `.BASH`; it is useful when launching from PowerShell:
+
+```powershell
+$bash = Get-Content .\config\real\.BASH -First 1
+& $bash .\scripts\run-f5-fleet-validation.sh --yes
+```
+
 Run Java tests:
 
 ```bash
-/cygdrive/c/cygwin64/bin/bash -lc 'cd /cygdrive/c/f5_git && ./scripts/test-java.sh'
+./scripts/test-java.sh
+```
+
+From PowerShell:
+
+```powershell
+& 'C:\Program Files\Git\bin\bash.exe' ./scripts/test-java.sh
 ```
 
 ## Run Against Multiple SSH Targets
@@ -38,6 +53,8 @@ mkdir -p config/real
 cp config/sample/f5-targets.csv config/real/f5-targets.csv
 cp config/sample/vm_outbound_checks.csv config/real/vm_outbound_checks.csv
 cp config/sample/.part_prefix_filter config/real/.part_prefix_filter
+cp config/sample/.JDK config/real/.JDK
+cp config/sample/.BASH config/real/.BASH
 ```
 
 If you want encrypted CSV passwords, set one master key in the local ignored config file. Do not store this key in the CSV or commit it:
@@ -88,7 +105,41 @@ MyTenant
 
 With this file present, only F5 partitions whose names start with `MyTenant` are shown in the F5 partition/pool report. Delete the file, leave it empty, or comment all lines to show all partitions.
 
-For F5 targets, the partition/pool inventory also correlates pool members, virtual servers, client SSL profiles, configured certificate objects, chain certificate objects, and virtual-server runtime statistics. Installed certificate metadata is read from each partition with `tmsh list sys crypto cert`. Certificate start/end dates are enriched from BIG-IP's public certificate file objects by asking tmsh for `sys file ssl-cert ... cache-path` and passing that tmsh-returned public certificate asset to `openssl x509 -startdate -enddate`; the validator does not scan `/config/ssl/ssl.crt`, `/config/filestore`, or guess certificate filenames. This remains compatible with HSM-backed private keys because only the public certificate object is read, not private key material. The report shows certificate fields that tmsh returns, including expiry, subject, issuer, common name, fingerprint, key size, and issuer-certificate references when present. A certificate start date is shown only when it is returned by the tmsh certificate repository path; it is not guessed from file timestamps or object creation time. The report shows each VIP destination, protocol, pool member IP:port values, current VIP connections, bits/bytes/packets in and out when exposed by BIG-IP, SSL profile, certificate validity, and chain details. Pool member IP:port values discovered from F5 pools are also tested from the F5 using the outbound connectivity check command and appear in `Outbound Connectivity` as `pool:<partition>/<pool>:<ip>:<port>` rows.
+For F5 targets, the partition/pool inventory correlates partitions, pools, pool members, virtual servers, client SSL profiles, server-side SSL profiles, configured certificate objects, chain certificate objects, and virtual-server runtime statistics.
+
+The main F5 inventory command is CK33:
+
+```bash
+tmsh -q -c 'cd /; list auth partition one-line; list ltm pool recursive one-line; list ltm virtual recursive one-line; list ltm profile client-ssl recursive one-line; list ltm profile server-ssl recursive one-line; list sys file ssl-cert recursive one-line; show ltm virtual recursive' 2>/dev/null || true
+```
+
+Installed certificate metadata is read per partition with CK35:
+
+```bash
+tmsh -q -c 'cd /; list auth partition one-line' 2>/dev/null |
+awk '/^auth partition / { print $3 }' |
+while read -r partition; do
+  echo "__F5_PARTITION__ ${partition}"
+  tmsh -q -c "cd /${partition}; list sys crypto cert" 2>/dev/null || true
+done
+```
+
+Certificate start/end dates are enriched from BIG-IP public certificate file objects by asking tmsh for `sys file ssl-cert ... cache-path` and passing that tmsh-returned public certificate asset to `openssl x509 -startdate -enddate`. The validator does not scan `/config/ssl/ssl.crt`, `/config/filestore`, or guess certificate filenames. This remains compatible with HSM-backed private keys because only the public certificate object is read, not private key material.
+
+The report shows certificate fields returned by tmsh, including expiry, subject, issuer, common name, fingerprint, key size, and issuer-certificate references when present. Certificate validity is calculated from the certificate expiry date and is colored as valid, expiring, or expired. Start date is shown only when returned by the tmsh certificate repository path; it is not guessed from file timestamps or object creation time.
+
+Inbound VIP certificate columns come from the VIP client-side SSL profile. Pool outbound certificate columns come from the VIP server-side SSL profile. For server-side SSL profiles, the parser reads certificates from both simple `cert <name>` properties and nested `cert-key-chain { ... cert <name> ... }` definitions, skipping `cert none` when a real chained cert is configured.
+
+The report shows each VIP destination, protocol, pool member IP:port values, current VIP connections, bits/bytes/packets in and out when exposed by BIG-IP, SSL profile, certificate validity, and chain details. Pool member IP:port values discovered from F5 pools are also tested from the F5 and appear in `Outbound Connectivity` as `pool:<partition>/<pool>:<protocol>:<ip>:<port>` rows.
+
+F5 pool members do not directly declare TCP versus UDP. The validator infers pool-member check protocol from the virtual servers that reference the pool:
+
+- VIP `ip-protocol udp` means discovered members are checked with UDP.
+- Other VIP protocols are checked with TCP.
+- If the same pool is referenced by both TCP and UDP VIPs, both protocols are checked.
+- If no VIP references the pool, TCP is used as the default.
+- If the pool name contains `radius` case-insensitively, the pool is forced to UDP/RADIUS checks only, with no TCP or TLS probes.
+- TLS certificate probes are generated only for TCP pool-member checks.
 
 When `rrdtool` is available on an F5 target, the report also includes the last 48 hours of read-only RRD time-series from useful local CPU, traffic, and connection files such as `cpu`, `rollupcpu`, `throughput`, `connections`, `bladeconnections`, `bwgain`, and related BIG-IP RRDs. Traffic values are reported as throughput in bits/sec with Kbps/Mbps/Gbps labels, not cumulative GB/MB transfer. Each RRD data source is shown as a normalized line graph with raw min/max values.
 
@@ -109,7 +160,7 @@ If no targets CSV argument is supplied, the fleet script reads `<effective-confi
 
 The fleet runner does not copy scripts to target machines. It uses Java SSH through the bundled JSch library and runs commands as the SSH login user only; it does not test sudo, feed sudo passwords, or elevate to root. It runs read-only commands such as `hostname`, `uptime`, `df`, `ps`, `systemctl`, and `netstat`. When a target is detected as F5/BIG-IP, it also runs read-only F5 checks such as `tmsh` service inspection and expected external listener validation. VM and F5 results appear in the same unified report.
 
-Before every SSH command is sent to a target, the runner prints the exact command and waits for operator confirmation. Type `Y` to send that command. Any other response rejects the command and the target validation is marked failed. After each command runs, the runner prints the exit status, stdout, and stderr in the terminal.
+Before every SSH command is sent to a target in interactive mode, the runner prints the check description and exact command/script, then waits for operator confirmation. Type `Y` to send that command. Any other response rejects the command and the target validation is marked failed. In auto-approved mode, the runner prints the check description and exit status by default.
 
 To approve every SSH command for one run without prompting:
 
@@ -118,6 +169,14 @@ To approve every SSH command for one run without prompting:
 ```
 
 For direct Java runs, set `SSH_APPROVE_ALL_COMMANDS=true`.
+
+Use `--details-ssh` when you need full console diagnostics. It prints the full generated command/script, the tmsh wrapper command when F5 tmsh-shell fallback is used, and stdout/stderr for every SSH command:
+
+```bash
+./scripts/run-f5-fleet-validation.sh --yes --details-ssh
+```
+
+Use `--log` to print command output without full command-body logging. `--details-ssh` is preferred when debugging quoting, brace, or tmsh wrapper issues.
 
 Password-based SSH is handled directly by Java/JSch. CSV password values with the `v1:` prefix are decrypted in memory using `<effective-config>/.MASTER_KEY` or the `MASTER_KEY` environment variable. CSV password values without the `v1:` prefix are used as literal plain passwords and do not require a master key.
 
@@ -169,4 +228,6 @@ Fleet runner settings:
 - `SSH_COMMAND_TIMEOUT_MILLIS`: Java SSH command channel timeout, default `10000`.
 - `SSH_STRICT_HOST_KEY_CHECKING`: JSch host key checking setting, default `no`.
 - `SSH_APPROVE_ALL_COMMANDS`: set to `true` to run all SSH commands without per-command confirmation.
+- `<effective-config>/.BASH`: optional local reference file for the Git Bash executable path on Windows. Helper scripts do not auto-read it; use it from PowerShell if desired.
+- `--log`: fleet runner flag that prints stdout/stderr after command execution.
 - `--details-ssh`: fleet runner flag that prints full SSH command bodies plus stdout/stderr for every SSH command. When tmsh wraps a command through `bash -s`, the console shows both the generated script and the tmsh wrapper. Default console output shows only check descriptions and extracted arguments.
