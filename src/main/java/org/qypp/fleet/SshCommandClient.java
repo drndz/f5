@@ -87,12 +87,12 @@ final class SshCommandClient implements AutoCloseable {
         if (!allowTmshFallback) {
             return false;
         }
-        CommandResult viaTmsh = runResultDirect(new ValidationCommand(probeCommand.id(), "run util bash -c " + tmshDoubleQuote(probeCommand.command())), "");
+        CommandResult viaTmsh = runResultDirect(tmshBashCommand(probeCommand, "run util bash"), probeCommand.command(), probeCommand.command());
         if (looksLikeBigIp(viaTmsh.stdout())) {
             preferTmshBash = true;
             return true;
         }
-        CommandResult viaSlashTmsh = runResultDirect(new ValidationCommand(probeCommand.id(), "run /util bash -c " + tmshDoubleQuote(probeCommand.command())), "");
+        CommandResult viaSlashTmsh = runResultDirect(tmshBashCommand(probeCommand, "run /util bash"), probeCommand.command(), probeCommand.command());
         if (looksLikeBigIp(viaSlashTmsh.stdout())) {
             preferTmshBash = true;
             return true;
@@ -121,7 +121,7 @@ final class SshCommandClient implements AutoCloseable {
             if (hasUsableOutput(viaTmsh)) {
                 return viaTmsh;
             }
-            CommandResult viaLegacyTmsh = runResultDirect(new ValidationCommand(command.id(), "run util bash -c " + shellQuote(command.command())), input);
+            CommandResult viaLegacyTmsh = runResultDirect(tmshBashCommand(command, "run /util bash"), stdinScript(command.command(), input), command.command());
             if (hasUsableOutput(viaLegacyTmsh)) {
                 preferTmshBash = true;
                 return viaLegacyTmsh;
@@ -131,29 +131,28 @@ final class SshCommandClient implements AutoCloseable {
     }
 
     private CommandResult runViaTmshBash(ValidationCommand command, String input) {
-        CommandResult viaDoubleQuotedTmsh = runResultDirect(new ValidationCommand(command.id(), "run util bash -c " + tmshDoubleQuote(command.command())), input);
-        if (hasUsableOutput(viaDoubleQuotedTmsh)) {
-            preferTmshBash = true;
-            return viaDoubleQuotedTmsh;
-        }
-        CommandResult viaTmsh = runResultDirect(new ValidationCommand(command.id(), "run util bash -c " + shellQuote(command.command())), input);
+        CommandResult viaTmsh = runResultDirect(tmshBashCommand(command, "run util bash"), stdinScript(command.command(), input), command.command());
         if (hasUsableOutput(viaTmsh)) {
             preferTmshBash = true;
             return viaTmsh;
         }
-        CommandResult viaSlashTmsh = runResultDirect(new ValidationCommand(command.id(), "run /util bash -c " + shellQuote(command.command())), input);
+        CommandResult viaSlashTmsh = runResultDirect(tmshBashCommand(command, "run /util bash"), stdinScript(command.command(), input), command.command());
         if (hasUsableOutput(viaSlashTmsh)) {
             preferTmshBash = true;
             return viaSlashTmsh;
         }
-        return viaDoubleQuotedTmsh;
+        return viaTmsh;
     }
 
     private CommandResult runResultDirect(ValidationCommand command, String input) {
+        return runResultDirect(command, input, command.command());
+    }
+
+    private CommandResult runResultDirect(ValidationCommand command, String input, String previewCommand) {
         ChannelExec channel = null;
         long started = System.nanoTime();
         try {
-            confirmCommand(command);
+            confirmCommand(command, previewCommand);
             channel = (ChannelExec) session.openChannel("exec");
             channel.setCommand(command.command());
             ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -175,7 +174,7 @@ final class SshCommandClient implements AutoCloseable {
                     channel.getExitStatus()
             );
             recordCommandTiming(command, result, started);
-            printCommandResult(command, result);
+            printCommandResult(command, previewCommand, result);
             return result;
         } catch (JSchException | InterruptedException exception) {
             if (exception instanceof InterruptedException) {
@@ -183,12 +182,12 @@ final class SshCommandClient implements AutoCloseable {
             }
             CommandResult result = new CommandResult("", exception.getMessage(), -1);
             recordCommandTiming(command, result, started);
-            printCommandResult(command, result);
+            printCommandResult(command, previewCommand, result);
             return result;
         } catch (IOException exception) {
             CommandResult result = new CommandResult("", exception.getMessage(), -1);
             recordCommandTiming(command, result, started);
-            printCommandResult(command, result);
+            printCommandResult(command, previewCommand, result);
             return result;
         } finally {
             if (channel != null) {
@@ -202,12 +201,12 @@ final class SshCommandClient implements AutoCloseable {
         commandTimingRows.add(command.label() + "|" + elapsedMillis + "|" + result.exitStatus() + "|" + oneLine(command.description()) + "|" + oneLine(command.command()));
     }
 
-    private void confirmCommand(ValidationCommand command) throws IOException {
+    private void confirmCommand(ValidationCommand command, String previewCommand) throws IOException {
         System.err.println();
         System.err.println("About to run SSH command [" + command.label() + "] on " + username + "@" + host + ":");
         System.err.println(commandSummary(command));
-        if (logCommandBody) {
-            System.err.println(command.command());
+        if (logCommandBody || !approveAllCommands) {
+            System.err.println(previewCommand);
         }
         if (approveAllCommands) {
             System.err.println("Auto-approved by SSH_APPROVE_ALL_COMMANDS=true.");
@@ -220,12 +219,21 @@ final class SshCommandClient implements AutoCloseable {
         }
     }
 
-    private void printCommandResult(ValidationCommand command, CommandResult result) {
+    private void printCommandResult(ValidationCommand command, String previewCommand, CommandResult result) {
         System.err.println("SSH command [" + command.label() + "] completed on " + username + "@" + host + " with exit status " + result.exitStatus() + ".");
-        if (!logCommandOutput) {
+        if (!logCommandOutput && !logCommandBody) {
             return;
         }
-        System.err.println(logCommandBody ? command.command() : commandSummary(command));
+        if (logCommandBody) {
+            System.err.println("--- command ---");
+            System.err.println(previewCommand);
+            if (!previewCommand.equals(command.command())) {
+                System.err.println("--- ssh wrapper ---");
+                System.err.println(command.command());
+            }
+        } else {
+            System.err.println(commandSummary(command));
+        }
         if (!result.stdout().isBlank()) {
             System.err.println("--- stdout ---");
             System.err.println(result.stdout().strip());
@@ -326,12 +334,15 @@ final class SshCommandClient implements AutoCloseable {
         return "'" + value.replace("'", "'\"'\"'") + "'";
     }
 
-    private static String tmshDoubleQuote(String value) {
-        return "\"" + value
-                .replace("\"", "\\\"")
-                .replace("\n", " ")
-                .replace("\r", " ")
-                + "\"";
+    private static String stdinScript(String command, String input) {
+        if (input == null || input.isEmpty()) {
+            return command + "\n";
+        }
+        return command + "\n" + input;
+    }
+
+    private static ValidationCommand tmshBashCommand(ValidationCommand command, String tmshRunPrefix) {
+        return new ValidationCommand(command.id(), tmshRunPrefix + " -c " + shellQuote("bash -s"), command.description());
     }
 
     private static String oneLine(String value) {

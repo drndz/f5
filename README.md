@@ -169,4 +169,4 @@ Fleet runner settings:
 - `SSH_COMMAND_TIMEOUT_MILLIS`: Java SSH command channel timeout, default `10000`.
 - `SSH_STRICT_HOST_KEY_CHECKING`: JSch host key checking setting, default `no`.
 - `SSH_APPROVE_ALL_COMMANDS`: set to `true` to run all SSH commands without per-command confirmation.
-- `--details-ssh`: fleet runner flag that prints full SSH command bodies in the console. Default console output shows only check descriptions and extracted arguments.
+- `--details-ssh`: fleet runner flag that prints full SSH command bodies plus stdout/stderr for every SSH command. When tmsh wraps a command through `bash -s`, the console shows both the generated script and the tmsh wrapper. Default console output shows only check descriptions and extracted arguments.
