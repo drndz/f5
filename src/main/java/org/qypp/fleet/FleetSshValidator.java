@@ -1462,7 +1462,7 @@ public final class FleetSshValidator {
 
     private static ClientSslInventory clientSslInventory(String line) {
         String path = token(line, 3);
-        String cert = configuredPath(firstPathAfter(line, "cert"));
+        String cert = configuredPath(firstCertPath(line));
         String chain = configuredPath(firstPathAfter(line, "chain"));
         return new ClientSslInventory(path, cert, chain);
     }
@@ -1543,6 +1543,15 @@ public final class FleetSshValidator {
 
     private static String firstPathAfter(String line, String key) {
         return valueAfter(line, key);
+    }
+
+    private static String firstCertPath(String line) {
+        Matcher certKeyChain = Pattern.compile("\\bcert-key-chain\\s*\\{\\s*[^{}]+\\s*\\{[^{}]*\\bcert\\s+([^\\s{}]+)").matcher(line);
+        if (certKeyChain.find()) {
+            return certKeyChain.group(1);
+        }
+        String cert = valueAfter(line, "cert");
+        return "none".equalsIgnoreCase(cert) ? "" : cert;
     }
 
     private static String quotedOrTokenAfter(String line, String key) {
@@ -1736,11 +1745,15 @@ public final class FleetSshValidator {
         if (expiration == null || expiration.isBlank()) {
             return 0;
         }
-        try {
-            return ZonedDateTime.parse(expiration.strip(), DateTimeFormatter.ofPattern("MMM d HH:mm:ss yyyy z", Locale.US).withZone(ZoneOffset.UTC)).toEpochSecond();
-        } catch (DateTimeParseException ignored) {
-            return 0;
+        String normalized = expiration.strip().replaceAll("\\s+", " ");
+        for (String pattern : List.of("MMM d HH:mm:ss yyyy z", "MMM dd HH:mm:ss yyyy z", "MMM d HH:mm:ss yyyy VV", "MMM dd HH:mm:ss yyyy VV")) {
+            try {
+                return ZonedDateTime.parse(normalized, DateTimeFormatter.ofPattern(pattern, Locale.US).withZone(ZoneOffset.UTC)).toEpochSecond();
+            } catch (DateTimeParseException ignored) {
+                // Try the next common BIG-IP/tmsh date shape.
+            }
         }
+        return 0;
     }
 
     private static List<String> poolMemberConnectivityChecks(SshCommandClient ssh, ValidationCommands commands, List<OutboundCheck> checks) {
@@ -2187,4 +2200,3 @@ public final class FleetSshValidator {
         return value.replaceAll("[^A-Za-z0-9_.-]", "_");
     }
 }
-
