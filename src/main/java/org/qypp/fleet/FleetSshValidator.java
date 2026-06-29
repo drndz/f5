@@ -1307,15 +1307,18 @@ public final class FleetSshValidator {
     }
 
     private static void addPoolMemberConnectivityChecks(List<OutboundCheck> checks, PoolInventory pool, List<String> protocols) {
+        List<String> effectiveProtocols = pool.name().toLowerCase(java.util.Locale.ROOT).contains("radius")
+                ? List.of("UDP")
+                : protocols;
         for (PoolMember member : pool.members()) {
             if (member.address().isBlank() || member.port() <= 0) {
                 continue;
             }
-            for (String protocol : protocols) {
+            for (String protocol : effectiveProtocols) {
                 String checkType = "TCP".equalsIgnoreCase(protocol) ? "CONNECT" : "RADIUS";
                 checks.add(new OutboundCheck("pool:" + pool.partition() + "/" + pool.name() + ":" + protocol + ":" + member.address() + ":" + member.port(), member.address(), member.port(), protocol, checkType, true));
             }
-            if (protocols.stream().anyMatch(protocol -> "TCP".equalsIgnoreCase(protocol))) {
+            if (effectiveProtocols.stream().anyMatch(protocol -> "TCP".equalsIgnoreCase(protocol))) {
                 checks.add(new OutboundCheck("pool:" + pool.partition() + "/" + pool.name() + ":TLS:" + member.address() + ":" + member.port(), member.address(), member.port(), "TCP", "TLS", true));
             }
         }
