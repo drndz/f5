@@ -1312,10 +1312,12 @@ public final class FleetSshValidator {
                 continue;
             }
             for (String protocol : protocols) {
-                String checkType = "TCP".equalsIgnoreCase(protocol) ? "CONNECT" : "AUTO";
+                String checkType = "TCP".equalsIgnoreCase(protocol) ? "CONNECT" : "RADIUS";
                 checks.add(new OutboundCheck("pool:" + pool.partition() + "/" + pool.name() + ":" + protocol + ":" + member.address() + ":" + member.port(), member.address(), member.port(), protocol, checkType, true));
             }
-            checks.add(new OutboundCheck("pool:" + pool.partition() + "/" + pool.name() + ":TLS:" + member.address() + ":" + member.port(), member.address(), member.port(), "TCP", "TLS", true));
+            if (protocols.stream().anyMatch(protocol -> "TCP".equalsIgnoreCase(protocol))) {
+                checks.add(new OutboundCheck("pool:" + pool.partition() + "/" + pool.name() + ":TLS:" + member.address() + ":" + member.port(), member.address(), member.port(), "TCP", "TLS", true));
+            }
         }
     }
 
